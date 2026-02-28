@@ -1,0 +1,62 @@
+{
+  "name": "wrenchit",
+  "displayName": "WrenchIT",
+  "description": "Utilidades rápidas: codificar/decodificar Base64 y limpiar/formatear JSON de Grafana",
+  "version": "0.1.0",
+  "publisher": "wrenchit",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Formatters"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "wrenchit.encodeBase64",
+        "title": "WrenchIT: Codificar en Base64"
+      },
+      {
+        "command": "wrenchit.decodeBase64",
+        "title": "WrenchIT: Decodificar Base64"
+      },
+      {
+        "command": "wrenchit.fixJson",
+        "title": "WrenchIT: Limpiar y formatear JSON (Grafana)"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "wrenchit.encodeBase64",
+          "group": "wrenchit@1",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "wrenchit.decodeBase64",
+          "group": "wrenchit@2",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "wrenchit.fixJson",
+          "group": "wrenchit@3"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}
