@@ -112,7 +112,7 @@ function fixJson() {
     return;
   }
 
-  const formatted = JSON.stringify(result.value, null, 2);
+  const formatted = formatJsonText(result.bestAttempt);
 
   if (hasSelection) {
     replaceSelection(editor, selection, formatted);
@@ -357,4 +357,79 @@ function grafanaDeepClean(s: string): string {
   result = result.replace(/,\s*([}\]])/g, '$1');
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Text-level JSON formatter (preserves original numeric representations)
+// ---------------------------------------------------------------------------
+
+/**
+ * Formats a valid JSON string with 2-space indentation working at the text
+ * level, without going through JSON.parse → JSON.stringify.
+ *
+ * This preserves the original numeric representation of every value, so
+ * `150.0` stays `150.0` instead of being coerced to `150` by the JS number
+ * type.
+ */
+function formatJsonText(json: string): string {
+  let out = '';
+  let indent = 0;
+  let i = 0;
+  const len = json.length;
+  const pad = () => '  '.repeat(indent);
+
+  while (i < len) {
+    const ch = json[i];
+
+    if (ch === '"') {
+      // Copy the entire string literal verbatim, respecting escape sequences
+      out += ch;
+      i++;
+      while (i < len) {
+        const c = json[i];
+        out += c;
+        if (c === '\\') {
+          i++;
+          if (i < len) { out += json[i]; i++; }
+        } else if (c === '"') {
+          i++;
+          break;
+        } else {
+          i++;
+        }
+      }
+    } else if (ch === '{' || ch === '[') {
+      const closeChar = ch === '{' ? '}' : ']';
+      // Peek ahead to detect empty containers {} or []
+      let j = i + 1;
+      while (j < len && /\s/.test(json[j])) { j++; }
+      if (json[j] === closeChar) {
+        out += ch + closeChar;
+        i = j + 1;
+      } else {
+        out += ch;
+        indent++;
+        out += '\n' + pad();
+        i++;
+      }
+    } else if (ch === '}' || ch === ']') {
+      indent--;
+      out += '\n' + pad() + ch;
+      i++;
+    } else if (ch === ':') {
+      out += ': ';
+      i++;
+    } else if (ch === ',') {
+      out += ',\n' + pad();
+      i++;
+    } else if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+      i++; // skip whitespace outside strings
+    } else {
+      // Numbers (150.0, 3.14…), booleans, null — copy character as-is
+      out += ch;
+      i++;
+    }
+  }
+
+  return out;
 }
