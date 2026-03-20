@@ -347,6 +347,18 @@ function grafanaDeepClean(s: string): string {
   // Second trailing-slash pass after unquoting (new content may have been revealed).
   result = result.replace(/"([^"/]*)\/+"/g, '"$1"');
 
+  // Unwrap string-wrapped empty objects/arrays (with optional inner whitespace):
+  //   "{ }"  →  {}      "[ ]"  →  []
+  // Grafana sometimes stores empty containers as the string value "{ }" / "[ ]".
+  result = result.replace(/"(\{\s*\})"/g, '$1');
+  result = result.replace(/"(\[\s*\])"/g, '$1');
+
+  // Remove double outer quotes around string values:  ""value""  →  "value"
+  // Happens when Grafana double-wraps content (e.g. after re-serialisation).
+  // The pattern requires 4 consecutive quote chars, so bare "" (empty string) is
+  // left untouched (only two consecutive quotes, no inner content with extra wrapping).
+  result = result.replace(/""([^"\\]*)""/g, '"$1"');
+
   // Strip outer quotes wrapping the whole document:
   //   "{"key":"val"}" → {"key":"val"}
   //   "["item"]"      → ["item"]
