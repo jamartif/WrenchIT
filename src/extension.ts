@@ -4,7 +4,8 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('wrenchit.encodeBase64', () => encodeBase64()),
     vscode.commands.registerCommand('wrenchit.decodeBase64', () => decodeBase64()),
-    vscode.commands.registerCommand('wrenchit.fixJson', () => fixJson())
+    vscode.commands.registerCommand('wrenchit.fixJson', () => fixJson()),
+    vscode.commands.registerCommand('wrenchit.decodeJwt', () => decodeJwt())
   );
 }
 
@@ -369,6 +370,49 @@ function grafanaDeepClean(s: string): string {
   result = result.replace(/,\s*([}\]])/g, '$1');
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Decode JWT
+// ---------------------------------------------------------------------------
+
+function decodeJwt() {
+  const ctx = getEditorAndSelection();
+  if (!ctx) { return; }
+  const { editor, selection, text } = ctx;
+
+  if (!text.trim()) {
+    vscode.window.showWarningMessage('WrenchIT: Selecciona el token JWT que quieres decodificar.');
+    return;
+  }
+
+  const parts = text.trim().split('.');
+  if (parts.length < 2) {
+    vscode.window.showErrorMessage('WrenchIT: El texto seleccionado no tiene formato JWT (se esperan al menos 2 partes separadas por ".").');
+    return;
+  }
+
+  try {
+    const decoded = decodeJwtParts(parts[0], parts[1]);
+    replaceSelection(editor, selection, decoded);
+  } catch {
+    vscode.window.showErrorMessage('WrenchIT: No se pudo decodificar el JWT. Comprueba que el token es válido.');
+  }
+}
+
+function decodeJwtParts(headerB64: string, payloadB64: string): string {
+  const decodeSegment = (seg: string): unknown => {
+    // Base64url → Base64 standard → Buffer → UTF-8 → JSON
+    const base64 = seg.replace(/-/g, '+').replace(/_/g, '/');
+    const json = Buffer.from(base64, 'base64').toString('utf8');
+    return JSON.parse(json);
+  };
+
+  const header  = decodeSegment(headerB64);
+  const payload = decodeSegment(payloadB64);
+
+  const combined = JSON.stringify({ header, payload });
+  return formatJsonText(combined);
 }
 
 // ---------------------------------------------------------------------------

@@ -27,21 +27,38 @@ Extensión de VS Code de un único fichero fuente (`src/extension.ts`). TypeScri
 - `getEditorAndSelection()` obtiene editor activo + selección (helper compartido).
 - `replaceSelection()` / `replaceWholeDocument()` aplican ediciones vía `editor.edit()`.
 
+Los comandos Base64 y `decodeJwt` requieren selección. `fixJson` opera sobre la selección si la hay o sobre el documento completo en caso contrario.
+
+Los cuatro comandos aparecen en el menú contextual del editor; Base64 y JWT solo cuando hay selección (`when: editorHasSelection`).
+
 ### Comando `fixJson` — pipeline de limpieza
 
-La función `cleanAndParseJson()` prueba estrategias en orden hasta que `JSON.parse()` tenga éxito:
+La función `cleanAndParseJson()` prueba estrategias en orden hasta que `JSON.parse()` tenga éxito. Si ninguna funciona, reemplaza el contenido con el último intento para que el usuario pueda inspeccionarlo.
 
-1. Texto tal cual
-2. Trim
-3. `tryUnwrapString` — desenvuelve capa exterior `"…"` vía `JSON.parse`
-4. `wrapAndUnescape` — envuelve en comillas para que el motor desescapee `\"`
-5. Eliminación de barras antes de comillas (sin contexto URL)
-6. Eliminación de barras simétricas `/"key/"` en ambos lados
-7. `grafanaDeepClean` — BOM, CRLF, desescapado multi-nivel, trailing commas, `unquoteJsonStringValues`
-8. `grafanaDeepClean` + `tryUnwrapString` combinados
+| # | Estrategia |
+|---|------------|
+| 1 | Texto tal cual |
+| 2 | Trim |
+| 3 | `tryUnwrapString` — desenvuelve capa exterior `"…"` vía `JSON.parse` |
+| 4 | `wrapAndUnescape` — envuelve en comillas para que el motor desescapee `\"` en un solo paso; falla si el texto contiene comillas sin escapar |
+| 5 | Eliminación de barras antes de comillas (sin contexto URL) + `\"` → `"` |
+| 6 | Eliminación de barras simétricas `/"key/"` en ambos lados |
+| 7 | `grafanaDeepClean` — BOM, CRLF, desescapado multi-nivel, trailing commas, `unquoteJsonStringValues` |
+| 8 | `grafanaDeepClean` + `tryUnwrapString` combinados |
 
-El formateado final usa `formatJsonText()`, un formateador a nivel de texto que **no pasa por `JSON.parse` → `JSON.stringify`**, preservando así representaciones numéricas como `150.0`.
+#### Helpers clave del pipeline
+
+- **`tryUnwrapString`** — si el string empieza y termina con `"`, usa `JSON.parse` para desescapar; hace fallback a recorte manual.
+- **`grafanaDeepClean`** — limpiador multi-paso: BOM → CRLF → unwrap (dos niveles) → barras simétricas → barras asimétricas → desescapado iterativo (máx. 5 pasadas) → segunda pasada de barras → trailing slash en valores → `unquoteJsonStringValues` → contenedores vacíos como string → dobles comillas exteriores → trailing commas.
+- **`unquoteJsonStringValues`** — elimina las comillas que envuelven valores que son objetos/arrays JSON sin escapar (p. ej. `"Content":"{"k":"v"}"` → `"Content":{"k":"v"}`). Itera hasta estabilización.
+
+#### Formateador de texto `formatJsonText`
+
+Formatea JSON con 2 espacios de indentación **trabajando a nivel de texto**, sin pasar por `JSON.parse` → `JSON.stringify`. Esto preserva representaciones numéricas como `150.0`. Los contenedores vacíos (`{}`, `[]`) se emiten en una sola línea.
 
 ## Release
 
-Empujar un tag `vX.Y.Z` dispara el workflow `.github/workflows/build.yml`, que sincroniza la versión en `package.json`, empaqueta el `.vsix` y lo adjunta al GitHub Release (lo crea si no existe).
+El workflow `.github/workflows/build.yml` se dispara en dos situaciones:
+
+- **Push a `main`**: compila y sube el `.vsix` como artefacto de CI (90 días de retención), pero no crea release.
+- **Push de tag `vX.Y.Z`**: además sincroniza la versión en `package.json` y adjunta el `.vsix` al GitHub Release (lo crea si no existe).
