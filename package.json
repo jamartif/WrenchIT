@@ -26,6 +26,10 @@
       {
         "command": "wrenchit.fixJson",
         "title": "WrenchIT: Limpiar y formatear JSON (Grafana)"
+      },
+      {
+        "command": "wrenchit.decodeJwt",
+        "title": "WrenchIT: Decodificar JWT"
       }
     ],
     "menus": {
@@ -43,6 +47,11 @@
         {
           "command": "wrenchit.fixJson",
           "group": "wrenchit@3"
+        },
+        {
+          "command": "wrenchit.decodeJwt",
+          "group": "wrenchit@4",
+          "when": "editorHasSelection"
         }
       ]
     }
