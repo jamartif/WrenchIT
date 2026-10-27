@@ -1,7 +1,7 @@
 {
   "name": "wrenchit",
   "displayName": "WrenchIT",
-  "description": "Utilidades rápidas: codificar/decodificar Base64 y limpiar/formatear JSON de Grafana",
+  "description": "Utilidades rápidas: codificar/decodificar Base64, limpiar/formatear JSON de Grafana y previsualizar specs OpenAPI con Swagger UI",
   "version": "0.1.0",
   "publisher": "wrenchit",
   "engines": {
@@ -26,6 +26,10 @@
       {
         "command": "wrenchit.fixJson",
         "title": "WrenchIT: Limpiar y formatear JSON (Grafana)"
+      },
+      {
+        "command": "wrenchit.previewOpenApi",
+        "title": "WrenchIT: Previsualizar OpenAPI (Swagger UI)"
       }
     ],
     "menus": {
@@ -43,20 +47,26 @@
         {
           "command": "wrenchit.fixJson",
           "group": "wrenchit@3"
+        },
+        {
+          "command": "wrenchit.previewOpenApi",
+          "group": "wrenchit@4"
         }
       ]
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && npm run copy-swagger-ui",
+    "copy-swagger-ui": "node ./scripts/copy-swagger-ui.js",
     "watch": "tsc -watch -p ./",
     "package": "vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.3.0",
-    "@vscode/vsce": "^2.22.0"
+    "@vscode/vsce": "^2.22.0",
+    "swagger-ui-dist": "^5.34.0",
+    "typescript": "^5.3.0"
   }
 }
