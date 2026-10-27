@@ -28,6 +28,10 @@
         "title": "WrenchIT: Limpiar y formatear JSON (Grafana)"
       },
       {
+        "command": "wrenchit.decodeJwt",
+        "title": "WrenchIT: Decodificar JWT"
+      },
+      {
         "command": "wrenchit.previewOpenApi",
         "title": "WrenchIT: Previsualizar OpenAPI (Swagger UI)"
       }
@@ -49,8 +53,13 @@
           "group": "wrenchit@3"
         },
         {
+          "command": "wrenchit.decodeJwt",
+          "group": "wrenchit@4",
+          "when": "editorHasSelection"
+        },
+        {
           "command": "wrenchit.previewOpenApi",
-          "group": "wrenchit@4"
+          "group": "wrenchit@5"
         }
       ]
     }
