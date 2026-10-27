@@ -1,6 +1,6 @@
 # WrenchIT
 
-Extensión de Visual Studio Code con utilidades rápidas para desarrolladores: codificación Base64 y limpieza de JSON corrupto (especialmente el que genera Grafana).
+Extensión de Visual Studio Code con utilidades rápidas para desarrolladores: codificación Base64, limpieza de JSON corrupto (especialmente el que genera Grafana) y previsualización de specs OpenAPI con Swagger UI.
 
 ## Comandos
 
@@ -41,6 +41,16 @@ El JSON que exporta Grafana suele llegar con múltiples capas de corrupción. La
 Si tras aplicar todas las estrategias el resultado sigue siendo JSON inválido, **el contenido se reemplaza igualmente** con el mejor intento de limpieza y se muestra una advertencia, para que puedas ver qué queda por corregir.
 
 **Uso:** abre el JSON en un editor → clic derecho → _WrenchIT: Limpiar y formatear JSON (Grafana)_
+
+---
+
+### WrenchIT: Previsualizar OpenAPI (Swagger UI)
+
+Renderiza una spec OpenAPI/Swagger (JSON) en una vista previa de Swagger UI, dentro de un panel al lado del editor. Funciona sobre la **selección activa** o, si no hay selección, sobre **todo el documento**.
+
+El JSON debe ser válido; si no lo es, usa primero _Limpiar y formatear JSON (Grafana)_. Volver a ejecutar el comando actualiza el panel ya abierto en lugar de crear uno nuevo.
+
+**Uso:** abre la spec OpenAPI en un editor → clic derecho → _WrenchIT: Previsualizar OpenAPI (Swagger UI)_
 
 ---
 

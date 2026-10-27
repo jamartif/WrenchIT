@@ -1,5 +1,6 @@
 # Compiled output
 out/
+media/swagger-ui/
 
 # Dependencies
 node_modules/

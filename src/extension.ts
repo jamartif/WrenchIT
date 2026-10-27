@@ -5,7 +5,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('wrenchit.encodeBase64', () => encodeBase64()),
     vscode.commands.registerCommand('wrenchit.decodeBase64', () => decodeBase64()),
     vscode.commands.registerCommand('wrenchit.fixJson', () => fixJson()),
-    vscode.commands.registerCommand('wrenchit.decodeJwt', () => decodeJwt())
+    vscode.commands.registerCommand('wrenchit.decodeJwt', () => decodeJwt()),
+    vscode.commands.registerCommand('wrenchit.previewOpenApi', () => previewOpenApi(context))
   );
 }
 
@@ -413,6 +414,91 @@ function decodeJwtParts(headerB64: string, payloadB64: string): string {
 
   const combined = JSON.stringify({ header, payload });
   return formatJsonText(combined);
+}
+
+// ---------------------------------------------------------------------------
+// Preview OpenAPI (Swagger UI)
+// ---------------------------------------------------------------------------
+
+let openApiPanel: vscode.WebviewPanel | undefined;
+
+function previewOpenApi(context: vscode.ExtensionContext) {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showErrorMessage('WrenchIT: No hay ningún editor activo.');
+    return;
+  }
+
+  const hasSelection = !editor.selection.isEmpty;
+  const raw = hasSelection
+    ? editor.document.getText(editor.selection)
+    : editor.document.getText();
+
+  if (!raw.trim()) {
+    vscode.window.showWarningMessage('WrenchIT: El editor está vacío.');
+    return;
+  }
+
+  let spec: unknown;
+  try {
+    spec = JSON.parse(raw);
+  } catch {
+    vscode.window.showErrorMessage(
+      'WrenchIT: El contenido no es JSON válido. Prueba primero con "Limpiar y formatear JSON" si viene de Grafana.'
+    );
+    return;
+  }
+
+  if (openApiPanel) {
+    openApiPanel.reveal(vscode.ViewColumn.Beside);
+  } else {
+    openApiPanel = vscode.window.createWebviewPanel(
+      'wrenchitOpenApiPreview',
+      'Preview OpenAPI',
+      vscode.ViewColumn.Beside,
+      { enableScripts: true, retainContextWhenHidden: true }
+    );
+    openApiPanel.onDidDispose(() => { openApiPanel = undefined; });
+  }
+
+  openApiPanel.webview.html = buildSwaggerUiHtml(openApiPanel.webview, context, spec);
+}
+
+function buildSwaggerUiHtml(webview: vscode.Webview, context: vscode.ExtensionContext, spec: unknown): string {
+  const mediaUri = (file: string) =>
+    webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'swagger-ui', file));
+
+  const bundleJsUri = mediaUri('swagger-ui-bundle.js');
+  const presetJsUri = mediaUri('swagger-ui-standalone-preset.js');
+  const cssUri = mediaUri('swagger-ui.css');
+
+  // Evita que una cadena como "</script>" dentro de la spec rompa el <script> embebido.
+  const specJson = JSON.stringify(spec).replace(/<\/script>/g, '<\\/script>');
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} data:;">
+  <link rel="stylesheet" href="${cssUri}">
+  <title>Preview OpenAPI</title>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="${bundleJsUri}"></script>
+  <script src="${presetJsUri}"></script>
+  <script>
+    window.onload = () => {
+      window.ui = SwaggerUIBundle({
+        spec: ${specJson},
+        dom_id: '#swagger-ui',
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+        layout: 'StandaloneLayout'
+      });
+    };
+  </script>
+</body>
+</html>`;
 }
 
 // ---------------------------------------------------------------------------
