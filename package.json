@@ -66,15 +66,19 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./ && npm run copy-swagger-ui",
+    "compile": "tsc -p ./ --noEmit && npm run bundle && npm run copy-swagger-ui",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --sourcemap",
     "copy-swagger-ui": "node ./scripts/copy-swagger-ui.js",
-    "watch": "tsc -watch -p ./",
+    "watch": "npm run bundle -- --watch",
+    "test": "npm run compile && node --test test/*.test.js",
     "package": "vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^2.22.0",
+    "esbuild": "^0.28.2",
+    "js-yaml": "^5.5.0",
     "swagger-ui-dist": "^5.34.0",
     "typescript": "^5.3.0"
   }

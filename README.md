@@ -34,7 +34,7 @@ El JSON que exporta Grafana suele llegar con múltiples capas de corrupción. La
 - Desenvuelve capas extra de comillas (`"..."`)
 - Elimina los delimitadores de barra que Grafana añade alrededor de strings (`///"key///"`, `/"value/"`, `:///"val///"`)
 - Deshace múltiples niveles de escape de comillas (`\"`, `\\"`, `\\\"`)
-- Convierte valores string que contienen JSON anidado sin escapar en objetos reales (`"Content":"{"key":"val"}"` → `"Content":{"key":"val"}`)
+- Quita las comillas que Grafana deja pegadas a llaves y corchetes (`"{` → `{`, `}"` → `}`, `"[` → `[`, `]"` → `]`) y desenvuelve valores string cuyo contenido es un objeto o un array (`"{\"id\":150.0}"` → `{"id":150.0}`), sin romper comillas internas como `"hello \"world\""`
 - Elimina barras residuales al final de strings (`"CommerceId/"` → `"CommerceId"`)
 - Elimina comas finales inválidas antes de `}` o `]`
 
@@ -46,9 +46,9 @@ Si tras aplicar todas las estrategias el resultado sigue siendo JSON inválido, 
 
 ### WrenchIT: Previsualizar OpenAPI (Swagger UI)
 
-Renderiza una spec OpenAPI/Swagger (JSON) en una vista previa de Swagger UI, dentro de un panel al lado del editor. Funciona sobre la **selección activa** o, si no hay selección, sobre **todo el documento**.
+Renderiza una spec OpenAPI/Swagger (JSON o YAML) en un panel de Swagger UI al lado del editor. Funciona sobre la **selección activa** o, si no hay selección, sobre **todo el documento**.
 
-El JSON debe ser válido; si no lo es, usa primero _Limpiar y formatear JSON (Grafana)_. Volver a ejecutar el comando actualiza el panel ya abierto en lugar de crear uno nuevo.
+Acepta JSON, YAML, un string JSON que contiene la spec y, si el texto viene escapado de Grafana, el mismo limpiador que _Limpiar y formatear JSON_. La spec tiene que incluir el campo `openapi` o `swagger`. Volver a ejecutar el comando actualiza el panel ya abierto.
 
 **Uso:** abre la spec OpenAPI en un editor → clic derecho → _WrenchIT: Previsualizar OpenAPI (Swagger UI)_
 
