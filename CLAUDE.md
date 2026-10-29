@@ -5,8 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Compilar TypeScript → out/
+# Typecheck + bundle (esbuild, incluye js-yaml) + assets de Swagger UI → out/
 npm run compile
+
+# Tests (node:test)
+npm test
 
 # Compilar en modo watch
 npm run watch
@@ -15,21 +18,21 @@ npm run watch
 npx vsce package --allow-missing-repository --skip-license
 ```
 
-No hay suite de tests. Para probar manualmente: `F5` en VS Code abre una ventana de extensión en modo Development Host.
+Los tests de lógica pura están en `test/` y se ejecutan con `npm test` (no hace falta el host de la extensión). Para probar la UI: `F5` en VS Code abre una ventana de extensión en modo Development Host.
 
 ## Arquitectura
 
-Extensión de VS Code de un único fichero fuente (`src/extension.ts`). TypeScript compilado a `out/extension.js` (CommonJS, ES2020).
+Extensión de VS Code de un único fichero fuente (`src/extension.ts`). `tsc --noEmit` comprueba tipos y esbuild empaqueta `out/extension.js` (CommonJS, con `js-yaml` incluido y `vscode` externo).
 
 ### Flujo de datos
 
-- `activate()` registra los tres comandos.
+- `activate()` registra los cinco comandos.
 - `getEditorAndSelection()` obtiene editor activo + selección (helper compartido).
 - `replaceSelection()` / `replaceWholeDocument()` aplican ediciones vía `editor.edit()`.
 
 Los comandos Base64 y `decodeJwt` requieren selección. `fixJson` opera sobre la selección si la hay o sobre el documento completo en caso contrario.
 
-Los cuatro comandos aparecen en el menú contextual del editor; Base64 y JWT solo cuando hay selección (`when: editorHasSelection`).
+Los cinco comandos aparecen en el menú contextual del editor; Base64 y JWT solo cuando hay selección (`when: editorHasSelection`).
 
 ### Comando `fixJson` — pipeline de limpieza
 
@@ -45,6 +48,8 @@ La función `cleanAndParseJson()` prueba estrategias en orden hasta que `JSON.pa
 | 6 | Eliminación de barras simétricas `/"key/"` en ambos lados |
 | 7 | `grafanaDeepClean` — BOM, CRLF, desescapado multi-nivel, trailing commas, `unquoteJsonStringValues` |
 | 8 | `grafanaDeepClean` + `tryUnwrapString` combinados |
+
+Si una estrategia produce texto que `JSON.parse` acepta, `finalizeJsonText` además desenvuelve un documento que sea un string JSON y promociona valores string cuyo contenido es un objeto o array (`"{...}"`, `"[...]"`), en texto, para no perder `150.0`. `grafanaDeepClean` quita esas comillas con `stripQuotedContainers` y desescapa comillas internas una sola capa cada vez (`unescapeOneLayer`), parando en cuanto el documento es válido.
 
 #### Helpers clave del pipeline
 

@@ -8,8 +8,9 @@ const DEST_DIR = path.join(__dirname, '..', 'media', 'swagger-ui');
 
 const FILES = [
   'swagger-ui-bundle.js',
-  'swagger-ui-standalone-preset.js',
-  'swagger-ui.css'
+  'swagger-ui.css',
+  'oauth2-redirect.html',
+  'oauth2-redirect.js'
 ];
 
 fs.mkdirSync(DEST_DIR, { recursive: true });
