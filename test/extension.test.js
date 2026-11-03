@@ -23,7 +23,8 @@ const {
   cleanAndParseJson,
   formatJsonText,
   buildSwaggerUiHtml,
-  parseOpenApiDocument
+  parseOpenApiDocument,
+  SPEC_BASE_URL
 } = require('../out/extension.js');
 
 function cleaned(raw) {
@@ -211,6 +212,22 @@ test('Swagger preview survives HTML in the spec and does not use the Explore lay
   assert.match(html, /<html lang="es" class="dark-mode">/);
   assert.match(config.oauth2RedirectUrl, /oauth2-redirect\.html$/);
   assert.match(webviewHtml(spec, false), /<html lang="es">/);
+});
+
+test('Swagger preview resolves local $refs against a fixed https base, not the webview URL', () => {
+  const spec = {
+    openapi: '3.1.1',
+    info: { title: 'Refs', version: '1.0.0' },
+    paths: {},
+    components: { schemas: { R: { type: 'object' } } }
+  };
+  const config = readSwaggerConfig(webviewHtml(spec));
+  assert.ok(Array.isArray(config.plugins) && config.plugins.length === 1);
+  const plugin = config.plugins[0]();
+  const wrapUrl = plugin.statePlugins.spec.wrapSelectors.url;
+  const url = wrapUrl(() => '')();
+  assert.equal(url, SPEC_BASE_URL);
+  assert.match(new URL('#/components/schemas/R', url).href, /^https:\/\/wrenchit\.invalid\/openapi\.json#/);
 });
 
 test('parseOpenApiDocument reads JSON, YAML, BOM, JSON strings and trailing commas', () => {

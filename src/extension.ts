@@ -779,6 +779,9 @@ function embedJsonForScript(value: unknown): string {
     .replace(/\u2029/g, '\\u2029');
 }
 
+/** Base URL for resolving the spec's $refs inside the webview (never fetched). */
+export const SPEC_BASE_URL = 'https://wrenchit.invalid/openapi.json';
+
 export function buildSwaggerUiHtml(
   webview: vscode.Webview,
   context: vscode.ExtensionContext,
@@ -801,6 +804,12 @@ export function buildSwaggerUiHtml(
   // validatorUrl null: el validador remoto queda bloqueado por la CSP del webview.
   // La inicialización no espera a window.onload: VS Code escribe el HTML del
   // webview con document.write y ese evento no siempre llega a dispararse.
+  // Plugin de url: sin URL de spec, Swagger UI usa document.baseURI
+  // (vscode-webview://…?…) como base para resolver los $ref. El resolver de
+  // OpenAPI 3.1 no sabe evaluar "#/components/…" contra esa URI y falla con
+  // "Could not resolve reference: Evaluation failed on URI". Una URL https
+  // fija (dominio .invalid, nunca se descarga) hace que los $ref locales se
+  // resuelvan dentro del propio documento.
   return `<!DOCTYPE html>
 <html lang="es"${htmlClass}>
 <head>
@@ -824,6 +833,11 @@ export function buildSwaggerUiHtml(
       dom_id: '#swagger-ui',
       deepLinking: false,
       presets: [SwaggerUIBundle.presets.apis],
+      plugins: [function () {
+        return { statePlugins: { spec: { wrapSelectors: {
+          url: function () { return function () { return ${embedJsonForScript(SPEC_BASE_URL)}; }; }
+        } } } };
+      }],
       layout: 'BaseLayout',
       validatorUrl: null,
       oauth2RedirectUrl: ${redirectJson},
