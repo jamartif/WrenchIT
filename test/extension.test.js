@@ -24,6 +24,7 @@ const {
   formatJsonText,
   buildSwaggerUiHtml,
   parseOpenApiDocument,
+  findBaseUrlDependencies,
   SPEC_BASE_URL
 } = require('../out/extension.js');
 
@@ -227,7 +228,65 @@ test('Swagger preview resolves local $refs against a fixed https base, not the w
   const wrapUrl = plugin.statePlugins.spec.wrapSelectors.url;
   const url = wrapUrl(() => '')();
   assert.equal(url, SPEC_BASE_URL);
+  assert.equal(plugin.components.InfoUrl(), null);
   assert.match(new URL('#/components/schemas/R', url).href, /^https:\/\/wrenchit\.invalid\/openapi\.json#/);
+});
+
+test('Swagger preview warns when relative servers would resolve against wrenchit.invalid', () => {
+  const op = { get: { responses: { '200': { description: 'ok' } } } };
+  const spec = {
+    openapi: '3.0.3',
+    info: { title: 'Relative', version: '1.0.0' },
+    servers: [{ url: '/api' }],
+    paths: { '/users': op }
+  };
+
+  // El comportamiento elegido: Swagger UI resuelve "/api" contra la base fija,
+  // así que «Try it out» iría a wrenchit.invalid. Lo fijamos y avisamos.
+  assert.equal(new URL('/api/users', SPEC_BASE_URL).href, 'https://wrenchit.invalid/api/users');
+  assert.deepEqual(findBaseUrlDependencies(spec), ['Servidor relativo "/api" en "servers".']);
+
+  const html = webviewHtml(spec);
+  assert.match(html, /class="wrenchit-warning"/);
+  assert.match(html, /Servidor relativo &quot;\/api&quot; en &quot;servers&quot;/);
+  assert.match(html, /https:\/\/wrenchit\.invalid/);
+  readSwaggerConfig(html);
+
+  const absolute = { ...spec, servers: [{ url: 'http://localhost:5080/api' }, { url: '{scheme}://example.com' }] };
+  assert.deepEqual(findBaseUrlDependencies(absolute), []);
+  assert.equal(webviewHtml(absolute).includes('class="wrenchit-warning"'), false);
+});
+
+test('findBaseUrlDependencies covers missing servers, path/operation servers, Swagger 2.0 and external refs', () => {
+  const info = { title: 't', version: '1' };
+  assert.equal(findBaseUrlDependencies({ openapi: '3.1.0', info, paths: {} }).length, 1);
+  assert.deepEqual(
+    findBaseUrlDependencies({
+      openapi: '3.1.0',
+      info,
+      servers: [{ url: 'https://api.example.com' }],
+      paths: {
+        '/a': {
+          servers: [{ url: 'v2' }],
+          post: {
+            servers: [{ url: '/op' }],
+            responses: { '200': { description: 'ok', content: { 'application/json': { schema: { $ref: './common.yaml#/X' } } } } }
+          }
+        },
+        '/b': { get: { responses: { '200': { $ref: '#/components/responses/Ok' } } } }
+      }
+    }),
+    [
+      'Servidor relativo "v2" en la ruta /a.',
+      'Servidor relativo "/op" en POST /a.',
+      '$ref externo relativo "./common.yaml#/X" (no se puede cargar desde la vista previa).'
+    ]
+  );
+  assert.equal(findBaseUrlDependencies({ swagger: '2.0', info, basePath: '/v2', paths: {} }).length, 1);
+  assert.deepEqual(findBaseUrlDependencies({ swagger: '2.0', info, host: 'api.example.com', paths: {} }), []);
+
+  const html = webviewHtml({ openapi: '3.0.3', info, servers: [{ url: '/<img src=x onerror=alert(1)>' }], paths: {} });
+  assert.equal(html.includes('<img src=x'), false);
 });
 
 test('parseOpenApiDocument reads JSON, YAML, BOM, JSON strings and trailing commas', () => {

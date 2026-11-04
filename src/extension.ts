@@ -779,8 +779,104 @@ function embedJsonForScript(value: unknown): string {
     .replace(/\u2029/g, '\\u2029');
 }
 
-/** Base URL for resolving the spec's $refs inside the webview (never fetched). */
+/**
+ * Base URL for resolving the spec's $refs inside the webview (never fetched).
+ *
+ * Swagger UI resolves everything relative against this URL, not only the
+ * local "#/…" refs: relative servers ("/api", or the implicit "/" when the
+ * spec has none), Swagger 2.0 documents without "host" and external $refs
+ * ("./common.yaml#/X"). "Try it out" would send those requests to
+ * wrenchit.invalid, so findBaseUrlDependencies() detects them and the
+ * preview shows a warning instead of silently pointing nowhere.
+ */
 export const SPEC_BASE_URL = 'https://wrenchit.invalid/openapi.json';
+
+const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'];
+
+/** True for "https://…", "//host…" and URLs that start with a server variable ("{scheme}://…"). */
+function isAbsoluteServerUrl(url: string): boolean {
+  return /^([a-z][a-z0-9+.-]*:|\/\/|\{)/i.test(url.trim());
+}
+
+/**
+ * Lists the parts of the spec that Swagger UI would resolve against
+ * SPEC_BASE_URL, so they would point at wrenchit.invalid. Each entry is a
+ * human-readable description in Spanish, ready to show in the preview.
+ */
+export function findBaseUrlDependencies(spec: unknown): string[] {
+  if (!spec || typeof spec !== 'object') return [];
+  const doc = spec as Record<string, any>;
+  const found: string[] = [];
+
+  if (typeof doc.swagger === 'string') {
+    if (typeof doc.host !== 'string' || !doc.host.trim()) {
+      found.push('La spec Swagger 2.0 no define "host".');
+    }
+  } else {
+    const relativeIn = (servers: unknown, where: string) => {
+      if (!Array.isArray(servers)) return;
+      for (const server of servers) {
+        const url = server && typeof server.url === 'string' ? server.url : undefined;
+        if (url !== undefined && !isAbsoluteServerUrl(url)) {
+          found.push(`Servidor relativo "${url}" ${where}.`);
+        }
+      }
+    };
+    if (!Array.isArray(doc.servers) || doc.servers.length === 0) {
+      found.push('La spec no define "servers" (OpenAPI usa "/" por defecto).');
+    } else {
+      relativeIn(doc.servers, 'en "servers"');
+    }
+    const paths = doc.paths && typeof doc.paths === 'object' ? doc.paths : {};
+    for (const [path, item] of Object.entries<any>(paths)) {
+      if (!item || typeof item !== 'object') continue;
+      relativeIn(item.servers, `en la ruta ${path}`);
+      for (const method of HTTP_METHODS) {
+        if (item[method]) relativeIn(item[method].servers, `en ${method.toUpperCase()} ${path}`);
+      }
+    }
+  }
+
+  const externalRefs = new Set<string>();
+  const stack: unknown[] = [doc];
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || typeof node !== 'object') continue;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === '$ref' && typeof value === 'string') {
+        if (!value.startsWith('#') && !isAbsoluteServerUrl(value)) externalRefs.add(value);
+      } else if (value && typeof value === 'object') {
+        stack.push(value);
+      }
+    }
+  }
+  for (const ref of externalRefs) {
+    found.push(`$ref externo relativo "${ref}" (no se puede cargar desde la vista previa).`);
+  }
+
+  return found;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildBaseUrlWarning(spec: unknown): string {
+  const issues = findBaseUrlDependencies(spec);
+  if (issues.length === 0) return '';
+  const host = new URL(SPEC_BASE_URL).host;
+  const items = issues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join('');
+  return `<div class="wrenchit-warning" role="alert">
+    <strong>Las URL relativas se resuelven contra ${host}.</strong>
+    La vista previa no tiene una URL de origen para la spec, así que «Try it out» enviaría estas peticiones a https://${host}, que no existe. Usa URL absolutas en los servidores (p. ej. http://localhost:5080/api) para probar la API desde aquí.
+    <ul>${items}</ul>
+  </div>`;
+}
 
 export function buildSwaggerUiHtml(
   webview: vscode.Webview,
@@ -797,6 +893,7 @@ export function buildSwaggerUiHtml(
   const specJson = embedJsonForScript(spec);
   const redirectJson = embedJsonForScript(String(redirectUri));
   const htmlClass = darkMode ? ' class="dark-mode"' : '';
+  const warningHtml = buildBaseUrlWarning(spec);
 
   // BaseLayout: StandaloneLayout pinta una barra "Explore" con la URL vacía.
   // Pulsarla (o Enter) llama a download("") y sustituye la spec por
@@ -809,7 +906,10 @@ export function buildSwaggerUiHtml(
   // OpenAPI 3.1 no sabe evaluar "#/components/…" contra esa URI y falla con
   // "Could not resolve reference: Evaluation failed on URI". Una URL https
   // fija (dominio .invalid, nunca se descarga) hace que los $ref locales se
-  // resuelvan dentro del propio documento.
+  // resuelvan dentro del propio documento. Contrapartida: los servidores
+  // relativos y los $ref externos también se resuelven contra esa URL; ver
+  // SPEC_BASE_URL y el aviso que genera buildBaseUrlWarning(). InfoUrl se
+  // anula para que la cabecera no enlace a esa URL ficticia bajo el título.
   return `<!DOCTYPE html>
 <html lang="es"${htmlClass}>
 <head>
@@ -822,9 +922,13 @@ export function buildSwaggerUiHtml(
     *, *:before, *:after { box-sizing: inherit; }
     body { margin: 0; background: #fafafa; }
     html.dark-mode body { background: #1c2022; }
+    .wrenchit-warning { margin: 16px auto 0; max-width: 1460px; padding: 10px 16px; border: 1px solid #e0b252; border-left-width: 4px; border-radius: 4px; background: #fff7e0; color: #3b3b3b; font: 13px/1.5 sans-serif; }
+    .wrenchit-warning ul { margin: 6px 0 0; padding-left: 20px; }
+    html.dark-mode .wrenchit-warning { background: #3a3220; border-color: #c99a3a; color: #f0e6d0; }
   </style>
 </head>
 <body>
+  ${warningHtml}
   <div id="swagger-ui"></div>
   <script src="${bundleJsUri}"></script>
   <script>
@@ -834,9 +938,12 @@ export function buildSwaggerUiHtml(
       deepLinking: false,
       presets: [SwaggerUIBundle.presets.apis],
       plugins: [function () {
-        return { statePlugins: { spec: { wrapSelectors: {
-          url: function () { return function () { return ${embedJsonForScript(SPEC_BASE_URL)}; }; }
-        } } } };
+        return {
+          statePlugins: { spec: { wrapSelectors: {
+            url: function () { return function () { return ${embedJsonForScript(SPEC_BASE_URL)}; }; }
+          } } },
+          components: { InfoUrl: function () { return null; } }
+        };
       }],
       layout: 'BaseLayout',
       validatorUrl: null,
