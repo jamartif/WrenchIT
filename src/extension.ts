@@ -793,10 +793,34 @@ export const SPEC_BASE_URL = 'https://wrenchit.invalid/openapi.json';
 
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'];
 
-/** True for "https://…", "//host…" and URLs that start with a server variable ("{scheme}://…"). */
-function isAbsoluteServerUrl(url: string): boolean {
-  return /^([a-z][a-z0-9+.-]*:|\/\/|\{)/i.test(url.trim());
+/**
+ * True for "https://…" and "//host…". A bare "scheme:" is not enough:
+ * "localhost:5080/api" has no "//", so Swagger UI resolves it as a relative path.
+ */
+function isAbsoluteUrl(url: string): boolean {
+  return /^([a-z][a-z0-9+.-]*:\/\/|\/\/)/i.test(url.trim());
 }
+
+/**
+ * Replaces each "{name}" of a Server Object URL with its variable's default,
+ * the value Swagger UI uses. Returns undefined when a variable has no
+ * default, since then the final URL cannot be known.
+ */
+function expandServerUrl(server: Record<string, any>): string | undefined {
+  const url: string = server.url;
+  const variables = server.variables && typeof server.variables === 'object' ? server.variables : {};
+  let unresolved = false;
+  const expanded = url.replace(/\{([^{}]*)\}/g, (_match, name: string) => {
+    const variable = Object.prototype.hasOwnProperty.call(variables, name) ? variables[name] : undefined;
+    if (variable && typeof variable === 'object' && variable.default !== undefined) return String(variable.default);
+    unresolved = true;
+    return '';
+  });
+  return unresolved ? undefined : expanded;
+}
+
+/** Keys whose content is sample data: a "$ref" inside them is not a reference. */
+const DATA_KEYS = new Set(['example', 'examples']);
 
 /**
  * Lists the parts of the spec that Swagger UI would resolve against
@@ -816,9 +840,11 @@ export function findBaseUrlDependencies(spec: unknown): string[] {
     const relativeIn = (servers: unknown, where: string) => {
       if (!Array.isArray(servers)) return;
       for (const server of servers) {
-        const url = server && typeof server.url === 'string' ? server.url : undefined;
-        if (url !== undefined && !isAbsoluteServerUrl(url)) {
-          found.push(`Servidor relativo "${url}" ${where}.`);
+        if (!server || typeof server.url !== 'string') continue;
+        const expanded = expandServerUrl(server);
+        // Sin valor por defecto no sabemos la URL final: no avisamos.
+        if (expanded !== undefined && !isAbsoluteUrl(expanded)) {
+          found.push(`Servidor relativo "${server.url}" ${where}.`);
         }
       }
     };
@@ -838,15 +864,23 @@ export function findBaseUrlDependencies(spec: unknown): string[] {
   }
 
   const externalRefs = new Set<string>();
-  const stack: unknown[] = [doc];
+  const seen = new WeakSet<object>();
+  // Cada entrada lleva la clave bajo la que cuelga el nodo, para distinguir
+  // "example" como dato de una propiedad de schema que se llame "example".
+  const stack: Array<[unknown, string | undefined]> = [[doc, undefined]];
   while (stack.length) {
-    const node = stack.pop();
-    if (!node || typeof node !== 'object') continue;
+    const [node, parentKey] = stack.pop()!;
+    // Los YAML con anclas (&a … *a) pueden producir estructuras cíclicas.
+    if (!node || typeof node !== 'object' || seen.has(node)) continue;
+    seen.add(node);
+    const isPropertyMap = parentKey === 'properties' && !Array.isArray(node);
     for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
       if (key === '$ref' && typeof value === 'string') {
-        if (!value.startsWith('#') && !isAbsoluteServerUrl(value)) externalRefs.add(value);
+        if (!value.startsWith('#') && !isAbsoluteUrl(value)) externalRefs.add(value);
+      } else if (DATA_KEYS.has(key) && !isPropertyMap) {
+        continue;
       } else if (value && typeof value === 'object') {
-        stack.push(value);
+        stack.push([value, key]);
       }
     }
   }
