@@ -289,6 +289,65 @@ test('findBaseUrlDependencies covers missing servers, path/operation servers, Sw
   assert.equal(html.includes('<img src=x'), false);
 });
 
+test('findBaseUrlDependencies needs "://" and expands server variables before deciding', () => {
+  const info = { title: 't', version: '1' };
+  const servers = (list) => findBaseUrlDependencies({ openapi: '3.0.3', info, servers: list, paths: {} });
+
+  // "localhost:" no es un esquema: sin "//" Swagger UI lo trata como ruta relativa.
+  assert.deepEqual(servers([{ url: 'localhost:5080/api' }]), ['Servidor relativo "localhost:5080/api" en "servers".']);
+  assert.deepEqual(servers([{ url: '//api.example.com' }]), []);
+
+  assert.deepEqual(servers([{ url: '{basePath}/v1', variables: { basePath: { default: '/api' } } }]), [
+    'Servidor relativo "{basePath}/v1" en "servers".'
+  ]);
+  assert.deepEqual(
+    servers([{ url: '{scheme}://{host}/v1', variables: { scheme: { default: 'https' }, host: { default: 'example.com' } } }]),
+    []
+  );
+  // Sin valor por defecto no se puede saber la URL final: no avisamos.
+  assert.deepEqual(servers([{ url: '{scheme}://example.com' }]), []);
+});
+
+test('findBaseUrlDependencies terminates on cyclic specs and ignores $ref inside examples', () => {
+  const info = { title: 't', version: '1' };
+  const schema = { type: 'object', properties: {} };
+  schema.properties.self = schema;
+  const spec = { openapi: '3.0.3', info, servers: [{ url: 'https://api.example.com' }], paths: {}, components: { schemas: { Node: schema } } };
+  spec.components.root = spec;
+  assert.deepEqual(findBaseUrlDependencies(spec), []);
+
+  const withExamples = {
+    openapi: '3.1.0',
+    info,
+    servers: [{ url: 'https://api.example.com' }],
+    paths: {
+      '/a': {
+        get: {
+          responses: {
+            '200': {
+              description: 'ok',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    examples: [{ $ref: './data.json' }],
+                    properties: { example: { $ref: './real.yaml#/X' } }
+                  },
+                  example: { $ref: './sample.json' },
+                  examples: { one: { value: { $ref: './other.json' } } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  };
+  assert.deepEqual(findBaseUrlDependencies(withExamples), [
+    '$ref externo relativo "./real.yaml#/X" (no se puede cargar desde la vista previa).'
+  ]);
+});
+
 test('parseOpenApiDocument reads JSON, YAML, BOM, JSON strings and trailing commas', () => {
   const json = '{"openapi":"3.0.3","info":{"title":"JSON","version":"1.0.0"},"paths":{}}';
   assert.equal(parseOpenApiDocument(json).info.title, 'JSON');
