@@ -4,6 +4,7 @@
   "description": "Quick developer utilities: Base64 encode/decode, JWT decode, clean up and format broken JSON (e.g. from Grafana) and preview OpenAPI specs with Swagger UI",
   "version": "0.1.0",
   "publisher": "jamartif",
+  "icon": "images/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/jamartif/WrenchIT"
