@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.6
 
 - Everything is in English: command titles, messages and the OpenAPI preview warning.
 - New extension icon.
