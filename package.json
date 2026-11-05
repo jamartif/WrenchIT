@@ -1,7 +1,7 @@
 {
   "name": "wrenchit",
   "displayName": "WrenchIT",
-  "description": "Utilidades rápidas: codificar/decodificar Base64, limpiar/formatear JSON de Grafana y previsualizar specs OpenAPI con Swagger UI",
+  "description": "Quick developer utilities: Base64 encode/decode, JWT decode, clean up and format broken JSON (e.g. from Grafana) and preview OpenAPI specs with Swagger UI",
   "version": "0.1.0",
   "publisher": "jamartif",
   "repository": {
@@ -21,23 +21,23 @@
     "commands": [
       {
         "command": "wrenchit.encodeBase64",
-        "title": "WrenchIT: Codificar en Base64"
+        "title": "WrenchIT: Encode Base64"
       },
       {
         "command": "wrenchit.decodeBase64",
-        "title": "WrenchIT: Decodificar Base64"
+        "title": "WrenchIT: Decode Base64"
       },
       {
         "command": "wrenchit.fixJson",
-        "title": "WrenchIT: Limpiar y formatear JSON (Grafana)"
+        "title": "WrenchIT: Clean Up and Format JSON (Grafana)"
       },
       {
         "command": "wrenchit.decodeJwt",
-        "title": "WrenchIT: Decodificar JWT"
+        "title": "WrenchIT: Decode JWT"
       },
       {
         "command": "wrenchit.previewOpenApi",
-        "title": "WrenchIT: Previsualizar OpenAPI (Swagger UI)"
+        "title": "WrenchIT: Preview OpenAPI (Swagger UI)"
       }
     ],
     "menus": {

@@ -24,7 +24,7 @@ function getEditorAndSelection(): {
 } | undefined {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
-    vscode.window.showErrorMessage('WrenchIT: No hay ningún editor activo.');
+    vscode.window.showErrorMessage('WrenchIT: No active editor.');
     return undefined;
   }
   return { editor, selection: editor.selection, text: editor.document.getText(editor.selection) };
@@ -52,7 +52,7 @@ function encodeBase64() {
   const { editor, selection, text } = ctx;
 
   if (!text) {
-    vscode.window.showWarningMessage('WrenchIT: Selecciona el texto que quieres codificar en Base64.');
+    vscode.window.showWarningMessage('WrenchIT: Select the text you want to encode as Base64.');
     return;
   }
 
@@ -70,7 +70,7 @@ function decodeBase64() {
   const { editor, selection, text } = ctx;
 
   if (!text) {
-    vscode.window.showWarningMessage('WrenchIT: Selecciona el texto Base64 que quieres decodificar.');
+    vscode.window.showWarningMessage('WrenchIT: Select the Base64 text you want to decode.');
     return;
   }
 
@@ -78,7 +78,7 @@ function decodeBase64() {
     const decoded = Buffer.from(text.trim(), 'base64').toString('utf8');
     replaceSelection(editor, selection, decoded);
   } catch {
-    vscode.window.showErrorMessage('WrenchIT: El texto seleccionado no es Base64 válido.');
+    vscode.window.showErrorMessage('WrenchIT: The selected text is not valid Base64.');
   }
 }
 
@@ -98,20 +98,20 @@ function fixJson() {
     : editor.document.getText();
 
   if (!raw.trim()) {
-    vscode.window.showWarningMessage('WrenchIT: El editor está vacío.');
+    vscode.window.showWarningMessage('WrenchIT: The editor is empty.');
     return;
   }
 
   const result = cleanAndParseJson(raw);
 
   if (!result.ok) {
-    // Aunque falle, reemplazar con el mejor intento para que el usuario vea qué quedó
+    // Even on failure, replace with the best attempt so the user can see what is left
     if (hasSelection) {
       replaceSelection(editor, selection, result.bestAttempt);
     } else {
       replaceWholeDocument(editor, result.bestAttempt);
     }
-    vscode.window.showWarningMessage(`WrenchIT: JSON inválido aun después de limpiar. Contenido reemplazado con el mejor intento para inspección. ${result.error}`);
+    vscode.window.showWarningMessage(`WrenchIT: The JSON is still invalid after cleaning. The content was replaced with the best attempt so you can inspect it. ${result.error}`);
     return;
   }
 
@@ -174,8 +174,8 @@ export function cleanAndParseJson(raw: string): ParseResult {
       continue;
     }
     bestAttempt = cleaned;
-    // Aunque el texto ya sea JSON válido, Grafana suele dejar objetos y arrays
-    // metidos en strings ("{\"k\":1}", "[{...}]"). Se desenvuelven aquí.
+    // Even when the text is already valid JSON, Grafana often leaves objects and
+    // arrays inside strings ("{\"k\":1}", "[{...}]"). They are unwrapped here.
     const finalized = finalizeJsonText(cleaned);
     if (jsonParsable(finalized)) {
       return { ok: true, value: JSON.parse(finalized), bestAttempt: finalized };
@@ -184,7 +184,7 @@ export function cleanAndParseJson(raw: string): ParseResult {
 
   return {
     ok: false,
-    error: 'Ninguna estrategia de limpieza produjo JSON válido.',
+    error: 'No cleaning strategy produced valid JSON.',
     bestAttempt
   };
 }
@@ -611,13 +611,13 @@ function decodeJwt() {
   const { editor, selection, text } = ctx;
 
   if (!text.trim()) {
-    vscode.window.showWarningMessage('WrenchIT: Selecciona el token JWT que quieres decodificar.');
+    vscode.window.showWarningMessage('WrenchIT: Select the JWT you want to decode.');
     return;
   }
 
   const parts = text.trim().split('.');
   if (parts.length < 2) {
-    vscode.window.showErrorMessage('WrenchIT: El texto seleccionado no tiene formato JWT (se esperan al menos 2 partes separadas por ".").');
+    vscode.window.showErrorMessage('WrenchIT: The selected text is not a JWT (expected at least 2 parts separated by ".").');
     return;
   }
 
@@ -625,7 +625,7 @@ function decodeJwt() {
     const decoded = decodeJwtParts(parts[0], parts[1]);
     replaceSelection(editor, selection, decoded);
   } catch {
-    vscode.window.showErrorMessage('WrenchIT: No se pudo decodificar el JWT. Comprueba que el token es válido.');
+    vscode.window.showErrorMessage('WrenchIT: Could not decode the JWT. Check that the token is valid.');
   }
 }
 
@@ -653,7 +653,7 @@ let openApiPanel: vscode.WebviewPanel | undefined;
 function previewOpenApi(context: vscode.ExtensionContext) {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
-    vscode.window.showErrorMessage('WrenchIT: No hay ningún editor activo.');
+    vscode.window.showErrorMessage('WrenchIT: No active editor.');
     return;
   }
 
@@ -663,7 +663,7 @@ function previewOpenApi(context: vscode.ExtensionContext) {
     : editor.document.getText();
 
   if (!raw.trim()) {
-    vscode.window.showWarningMessage('WrenchIT: El editor está vacío.');
+    vscode.window.showWarningMessage('WrenchIT: The editor is empty.');
     return;
   }
 
@@ -671,7 +671,7 @@ function previewOpenApi(context: vscode.ExtensionContext) {
   try {
     spec = parseOpenApiDocument(raw);
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'WrenchIT: No se pudo leer la spec.';
+    const message = err instanceof Error ? err.message : 'WrenchIT: Could not read the spec.';
     vscode.window.showErrorMessage(message);
     return;
   }
@@ -706,7 +706,7 @@ function previewOpenApi(context: vscode.ExtensionContext) {
 export function parseOpenApiDocument(raw: string): unknown {
   const text = raw.replace(/^\uFEFF/, '').trim();
   if (!text) {
-    throw new Error('WrenchIT: El editor está vacío.');
+    throw new Error('WrenchIT: The editor is empty.');
   }
 
   const direct = interpretOpenApiText(text);
@@ -719,7 +719,7 @@ export function parseOpenApiDocument(raw: string): unknown {
   }
 
   throw new Error(
-    'WrenchIT: El contenido no es una spec OpenAPI/Swagger en JSON o YAML. Tiene que incluir el campo "openapi" o "swagger".'
+    'WrenchIT: The content is not an OpenAPI/Swagger spec in JSON or YAML. It must include an "openapi" or "swagger" field.'
   );
 }
 
@@ -825,7 +825,7 @@ const DATA_KEYS = new Set(['example', 'examples']);
 /**
  * Lists the parts of the spec that Swagger UI would resolve against
  * SPEC_BASE_URL, so they would point at wrenchit.invalid. Each entry is a
- * human-readable description in Spanish, ready to show in the preview.
+ * human-readable description, ready to show in the preview.
  */
 export function findBaseUrlDependencies(spec: unknown): string[] {
   if (!spec || typeof spec !== 'object') return [];
@@ -834,7 +834,7 @@ export function findBaseUrlDependencies(spec: unknown): string[] {
 
   if (typeof doc.swagger === 'string') {
     if (typeof doc.host !== 'string' || !doc.host.trim()) {
-      found.push('La spec Swagger 2.0 no define "host".');
+      found.push('The Swagger 2.0 spec does not define "host".');
     }
   } else {
     const relativeIn = (servers: unknown, where: string) => {
@@ -842,35 +842,35 @@ export function findBaseUrlDependencies(spec: unknown): string[] {
       for (const server of servers) {
         if (!server || typeof server.url !== 'string') continue;
         const expanded = expandServerUrl(server);
-        // Sin valor por defecto no sabemos la URL final: no avisamos.
+        // Without a default the final URL is unknown: no warning.
         if (expanded !== undefined && !isAbsoluteUrl(expanded)) {
-          found.push(`Servidor relativo "${server.url}" ${where}.`);
+          found.push(`Relative server "${server.url}" ${where}.`);
         }
       }
     };
     if (!Array.isArray(doc.servers) || doc.servers.length === 0) {
-      found.push('La spec no define "servers" (OpenAPI usa "/" por defecto).');
+      found.push('The spec does not define "servers" (OpenAPI defaults to "/").');
     } else {
-      relativeIn(doc.servers, 'en "servers"');
+      relativeIn(doc.servers, 'in "servers"');
     }
     const paths = doc.paths && typeof doc.paths === 'object' ? doc.paths : {};
     for (const [path, item] of Object.entries<any>(paths)) {
       if (!item || typeof item !== 'object') continue;
-      relativeIn(item.servers, `en la ruta ${path}`);
+      relativeIn(item.servers, `in path ${path}`);
       for (const method of HTTP_METHODS) {
-        if (item[method]) relativeIn(item[method].servers, `en ${method.toUpperCase()} ${path}`);
+        if (item[method]) relativeIn(item[method].servers, `in ${method.toUpperCase()} ${path}`);
       }
     }
   }
 
   const externalRefs = new Set<string>();
   const seen = new WeakSet<object>();
-  // Cada entrada lleva la clave bajo la que cuelga el nodo, para distinguir
-  // "example" como dato de una propiedad de schema que se llame "example".
+  // Each entry carries the key the node hangs from, to tell "example" as sample
+  // data apart from a schema property that happens to be called "example".
   const stack: Array<[unknown, string | undefined]> = [[doc, undefined]];
   while (stack.length) {
     const [node, parentKey] = stack.pop()!;
-    // Los YAML con anclas (&a … *a) pueden producir estructuras cíclicas.
+    // YAML anchors (&a … *a) can produce cyclic structures.
     if (!node || typeof node !== 'object' || seen.has(node)) continue;
     seen.add(node);
     const isPropertyMap = parentKey === 'properties' && !Array.isArray(node);
@@ -885,7 +885,7 @@ export function findBaseUrlDependencies(spec: unknown): string[] {
     }
   }
   for (const ref of externalRefs) {
-    found.push(`$ref externo relativo "${ref}" (no se puede cargar desde la vista previa).`);
+    found.push(`Relative external $ref "${ref}" (cannot be loaded from the preview).`);
   }
 
   return found;
@@ -906,8 +906,8 @@ function buildBaseUrlWarning(spec: unknown): string {
   const host = new URL(SPEC_BASE_URL).host;
   const items = issues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join('');
   return `<div class="wrenchit-warning" role="alert">
-    <strong>Las URL relativas se resuelven contra ${host}.</strong>
-    La vista previa no tiene una URL de origen para la spec, así que «Try it out» enviaría estas peticiones a https://${host}, que no existe. Usa URL absolutas en los servidores (p. ej. http://localhost:5080/api) para probar la API desde aquí.
+    <strong>Relative URLs resolve against ${host}.</strong>
+    The preview has no source URL for the spec, so "Try it out" would send these requests to https://${host}, which does not exist. Use absolute server URLs (e.g. http://localhost:5080/api) to try the API from here.
     <ul>${items}</ul>
   </div>`;
 }
@@ -929,23 +929,23 @@ export function buildSwaggerUiHtml(
   const htmlClass = darkMode ? ' class="dark-mode"' : '';
   const warningHtml = buildBaseUrlWarning(spec);
 
-  // BaseLayout: StandaloneLayout pinta una barra "Explore" con la URL vacía.
-  // Pulsarla (o Enter) llama a download("") y sustituye la spec por
-  // "Failed to load API definition" / "No API definition provided".
-  // validatorUrl null: el validador remoto queda bloqueado por la CSP del webview.
-  // La inicialización no espera a window.onload: VS Code escribe el HTML del
-  // webview con document.write y ese evento no siempre llega a dispararse.
-  // Plugin de url: sin URL de spec, Swagger UI usa document.baseURI
-  // (vscode-webview://…?…) como base para resolver los $ref. El resolver de
-  // OpenAPI 3.1 no sabe evaluar "#/components/…" contra esa URI y falla con
-  // "Could not resolve reference: Evaluation failed on URI". Una URL https
-  // fija (dominio .invalid, nunca se descarga) hace que los $ref locales se
-  // resuelvan dentro del propio documento. Contrapartida: los servidores
-  // relativos y los $ref externos también se resuelven contra esa URL; ver
-  // SPEC_BASE_URL y el aviso que genera buildBaseUrlWarning(). InfoUrl se
-  // anula para que la cabecera no enlace a esa URL ficticia bajo el título.
+  // BaseLayout: StandaloneLayout draws an "Explore" bar with an empty URL.
+  // Clicking it (or pressing Enter) calls download("") and replaces the spec
+  // with "Failed to load API definition" / "No API definition provided".
+  // validatorUrl null: the webview CSP blocks the remote validator anyway.
+  // Initialization does not wait for window.onload: VS Code writes the
+  // webview HTML with document.write and that event does not always fire.
+  // url plugin: with no spec URL, Swagger UI uses document.baseURI
+  // (vscode-webview://…?…) as the base for resolving $refs. The OpenAPI 3.1
+  // resolver cannot evaluate "#/components/…" against that URI and fails with
+  // "Could not resolve reference: Evaluation failed on URI". A fixed https URL
+  // (.invalid domain, never fetched) makes local $refs resolve inside the
+  // document itself. Trade-off: relative servers and external $refs also
+  // resolve against that URL; see SPEC_BASE_URL and the warning built by
+  // buildBaseUrlWarning(). InfoUrl is cleared so the header does not link to
+  // that fake URL under the title.
   return `<!DOCTYPE html>
-<html lang="es"${htmlClass}>
+<html lang="en"${htmlClass}>
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} https: data: blob:; font-src ${webview.cspSource} data:; connect-src http: https:;">

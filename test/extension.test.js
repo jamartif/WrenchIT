@@ -195,7 +195,7 @@ test('Swagger preview survives HTML in the spec and does not use the Explore lay
     info: {
       title: 'Demo',
       version: '1.0.0',
-      description: 'Ejemplo con </script>, </SCRIPT> y </script > más un salto\u2028de línea'
+      description: 'Example with </script>, </SCRIPT> and </script > plus a line\u2028separator'
     },
     paths: { '/users': { get: { responses: { '200': { description: 'ok' } } } } }
   };
@@ -210,9 +210,9 @@ test('Swagger preview survives HTML in the spec and does not use the Explore lay
   assert.equal(html.includes('swagger-ui-standalone-preset'), false);
   assert.equal(html.includes('window.onload'), false);
   assert.match(html, /connect-src http: https:/);
-  assert.match(html, /<html lang="es" class="dark-mode">/);
+  assert.match(html, /<html lang="en" class="dark-mode">/);
   assert.match(config.oauth2RedirectUrl, /oauth2-redirect\.html$/);
-  assert.match(webviewHtml(spec, false), /<html lang="es">/);
+  assert.match(webviewHtml(spec, false), /<html lang="en">/);
 });
 
 test('Swagger preview resolves local $refs against a fixed https base, not the webview URL', () => {
@@ -241,14 +241,14 @@ test('Swagger preview warns when relative servers would resolve against wrenchit
     paths: { '/users': op }
   };
 
-  // El comportamiento elegido: Swagger UI resuelve "/api" contra la base fija,
-  // así que «Try it out» iría a wrenchit.invalid. Lo fijamos y avisamos.
+  // Chosen behaviour: Swagger UI resolves "/api" against the fixed base, so
+  // "Try it out" would go to wrenchit.invalid. We pin that and warn about it.
   assert.equal(new URL('/api/users', SPEC_BASE_URL).href, 'https://wrenchit.invalid/api/users');
-  assert.deepEqual(findBaseUrlDependencies(spec), ['Servidor relativo "/api" en "servers".']);
+  assert.deepEqual(findBaseUrlDependencies(spec), ['Relative server "/api" in "servers".']);
 
   const html = webviewHtml(spec);
   assert.match(html, /class="wrenchit-warning"/);
-  assert.match(html, /Servidor relativo &quot;\/api&quot; en &quot;servers&quot;/);
+  assert.match(html, /Relative server &quot;\/api&quot; in &quot;servers&quot;/);
   assert.match(html, /https:\/\/wrenchit\.invalid/);
   readSwaggerConfig(html);
 
@@ -277,9 +277,9 @@ test('findBaseUrlDependencies covers missing servers, path/operation servers, Sw
       }
     }),
     [
-      'Servidor relativo "v2" en la ruta /a.',
-      'Servidor relativo "/op" en POST /a.',
-      '$ref externo relativo "./common.yaml#/X" (no se puede cargar desde la vista previa).'
+      'Relative server "v2" in path /a.',
+      'Relative server "/op" in POST /a.',
+      'Relative external $ref "./common.yaml#/X" (cannot be loaded from the preview).'
     ]
   );
   assert.equal(findBaseUrlDependencies({ swagger: '2.0', info, basePath: '/v2', paths: {} }).length, 1);
@@ -293,18 +293,18 @@ test('findBaseUrlDependencies needs "://" and expands server variables before de
   const info = { title: 't', version: '1' };
   const servers = (list) => findBaseUrlDependencies({ openapi: '3.0.3', info, servers: list, paths: {} });
 
-  // "localhost:" no es un esquema: sin "//" Swagger UI lo trata como ruta relativa.
-  assert.deepEqual(servers([{ url: 'localhost:5080/api' }]), ['Servidor relativo "localhost:5080/api" en "servers".']);
+  // "localhost:" is not a scheme: without "//" Swagger UI treats it as a relative path.
+  assert.deepEqual(servers([{ url: 'localhost:5080/api' }]), ['Relative server "localhost:5080/api" in "servers".']);
   assert.deepEqual(servers([{ url: '//api.example.com' }]), []);
 
   assert.deepEqual(servers([{ url: '{basePath}/v1', variables: { basePath: { default: '/api' } } }]), [
-    'Servidor relativo "{basePath}/v1" en "servers".'
+    'Relative server "{basePath}/v1" in "servers".'
   ]);
   assert.deepEqual(
     servers([{ url: '{scheme}://{host}/v1', variables: { scheme: { default: 'https' }, host: { default: 'example.com' } } }]),
     []
   );
-  // Sin valor por defecto no se puede saber la URL final: no avisamos.
+  // Without a default the final URL cannot be known: no warning.
   assert.deepEqual(servers([{ url: '{scheme}://example.com' }]), []);
 });
 
@@ -344,7 +344,7 @@ test('findBaseUrlDependencies terminates on cyclic specs and ignores $ref inside
     }
   };
   assert.deepEqual(findBaseUrlDependencies(withExamples), [
-    '$ref externo relativo "./real.yaml#/X" (no se puede cargar desde la vista previa).'
+    'Relative external $ref "./real.yaml#/X" (cannot be loaded from the preview).'
   ]);
 });
 
@@ -359,7 +359,7 @@ info:
   title: YAML Demo
   version: "1.2.3"
   description: |
-    Texto con </SCRIPT> y dos líneas
+    Text with </SCRIPT> and two lines
 paths:
   /users:
     get:
@@ -384,5 +384,5 @@ paths:
 test('parseOpenApiDocument rejects text that is not a spec', () => {
   assert.throws(() => parseOpenApiDocument('{"hello":"world"}'), /openapi/);
   assert.throws(() => parseOpenApiDocument('just text'), /openapi/);
-  assert.throws(() => parseOpenApiDocument('   '), /vacío/);
+  assert.throws(() => parseOpenApiDocument('   '), /empty/);
 });
