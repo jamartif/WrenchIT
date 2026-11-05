@@ -3,7 +3,11 @@
   "displayName": "WrenchIT",
   "description": "Utilidades rápidas: codificar/decodificar Base64, limpiar/formatear JSON de Grafana y previsualizar specs OpenAPI con Swagger UI",
   "version": "0.1.0",
-  "publisher": "wrenchit",
+  "publisher": "jamartif",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jamartif/WrenchIT"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
