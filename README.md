@@ -1,69 +1,92 @@
 # WrenchIT
 
-Extensión de Visual Studio Code con utilidades rápidas para desarrolladores: codificación Base64, limpieza de JSON corrupto (especialmente el que genera Grafana) y previsualización de specs OpenAPI con Swagger UI.
+A Visual Studio Code extension with quick developer utilities: Base64 encoding, JWT decoding, cleanup of broken JSON (especially the kind Grafana produces) and OpenAPI spec previews with Swagger UI.
 
-## Comandos
+## Commands
 
-Todos los comandos están disponibles desde la **paleta de comandos** (`Ctrl+Shift+P`) y en el **menú contextual** del editor (clic derecho).
-
----
-
-### WrenchIT: Codificar en Base64
-
-Codifica el texto seleccionado en Base64 (UTF-8).
-
-**Uso:** selecciona el texto → clic derecho → _WrenchIT: Codificar en Base64_
+All commands are available from the **Command Palette** (`Ctrl+Shift+P` / `Cmd+Shift+P`) and from the editor **context menu** (right-click).
 
 ---
 
-### WrenchIT: Decodificar Base64
+### WrenchIT: Encode Base64
 
-Decodifica el texto seleccionado desde Base64 a texto plano.
+Encodes the selected text as Base64 (UTF-8).
 
-**Uso:** selecciona el texto Base64 → clic derecho → _WrenchIT: Decodificar Base64_
-
----
-
-### WrenchIT: Limpiar y formatear JSON (Grafana)
-
-Limpia y formatea JSON corrupto. Funciona sobre la **selección activa** o, si no hay selección, sobre **todo el documento**.
-
-El JSON que exporta Grafana suele llegar con múltiples capas de corrupción. La extensión aplica un pipeline de limpieza en orden hasta obtener JSON válido:
-
-- Elimina BOM y saltos de línea Windows
-- Desenvuelve capas extra de comillas (`"..."`)
-- Elimina los delimitadores de barra que Grafana añade alrededor de strings (`///"key///"`, `/"value/"`, `:///"val///"`)
-- Deshace múltiples niveles de escape de comillas (`\"`, `\\"`, `\\\"`)
-- Quita las comillas que Grafana deja pegadas a llaves y corchetes (`"{` → `{`, `}"` → `}`, `"[` → `[`, `]"` → `]`) y desenvuelve valores string cuyo contenido es un objeto o un array (`"{\"id\":150.0}"` → `{"id":150.0}`), sin romper comillas internas como `"hello \"world\""`
-- Elimina barras residuales al final de strings (`"CommerceId/"` → `"CommerceId"`)
-- Elimina comas finales inválidas antes de `}` o `]`
-
-Si tras aplicar todas las estrategias el resultado sigue siendo JSON inválido, **el contenido se reemplaza igualmente** con el mejor intento de limpieza y se muestra una advertencia, para que puedas ver qué queda por corregir.
-
-**Uso:** abre el JSON en un editor → clic derecho → _WrenchIT: Limpiar y formatear JSON (Grafana)_
+**Usage:** select the text → right-click → _WrenchIT: Encode Base64_
 
 ---
 
-### WrenchIT: Previsualizar OpenAPI (Swagger UI)
+### WrenchIT: Decode Base64
 
-Renderiza una spec OpenAPI/Swagger (JSON o YAML) en un panel de Swagger UI al lado del editor. Funciona sobre la **selección activa** o, si no hay selección, sobre **todo el documento**.
+Decodes the selected Base64 text back to plain text.
 
-Acepta JSON, YAML, un string JSON que contiene la spec y, si el texto viene escapado de Grafana, el mismo limpiador que _Limpiar y formatear JSON_. La spec tiene que incluir el campo `openapi` o `swagger`. Volver a ejecutar el comando actualiza el panel ya abierto.
-
-**Uso:** abre la spec OpenAPI en un editor → clic derecho → _WrenchIT: Previsualizar OpenAPI (Swagger UI)_
+**Usage:** select the Base64 text → right-click → _WrenchIT: Decode Base64_
 
 ---
 
-## Instalación local
+### WrenchIT: Decode JWT
+
+Replaces the selected JSON Web Token with its decoded header and payload, as formatted JSON (`{"header": …, "payload": …}`). The signature is not verified.
+
+**Usage:** select the token → right-click → _WrenchIT: Decode JWT_
+
+---
+
+### WrenchIT: Clean Up and Format JSON (Grafana)
+
+Cleans up and formats broken JSON. It works on the **active selection** or, if nothing is selected, on the **whole document**.
+
+JSON exported from Grafana often arrives with several layers of corruption. The extension runs a cleanup pipeline, in order, until it gets valid JSON:
+
+- Removes the BOM and Windows line endings
+- Unwraps extra layers of quotes (`"..."`)
+- Removes the slash delimiters Grafana adds around strings (`///"key///"`, `/"value/"`, `:///"val///"`)
+- Undoes several levels of escaped quotes (`\"`, `\\"`, `\\\"`)
+- Removes the quotes Grafana leaves stuck to braces and brackets (`"{` → `{`, `}"` → `}`, `"[` → `[`, `]"` → `]`) and unwraps string values whose content is an object or an array (`"{\"id\":150.0}"` → `{"id":150.0}`), without breaking inner quotes such as `"hello \"world\""`
+- Removes leftover trailing slashes in strings (`"CommerceId/"` → `"CommerceId"`)
+- Removes invalid trailing commas before `}` or `]`
+
+Numbers keep their original form (`150.0` stays `150.0`), because formatting works on the text instead of re-serializing it.
+
+If the result is still invalid JSON after every strategy, **the content is replaced anyway** with the best cleanup attempt and a warning is shown, so you can see what is left to fix.
+
+**Usage:** open the JSON in an editor → right-click → _WrenchIT: Clean Up and Format JSON (Grafana)_
+
+---
+
+### WrenchIT: Preview OpenAPI (Swagger UI)
+
+Renders an OpenAPI/Swagger spec (JSON or YAML) in a Swagger UI panel next to the editor. It works on the **active selection** or, if nothing is selected, on the **whole document**.
+
+It accepts JSON, YAML, a JSON string that contains the spec and, if the text comes escaped from Grafana, the same cleaner as _Clean Up and Format JSON_. The spec must include an `openapi` or `swagger` field. Running the command again refreshes the panel that is already open.
+
+The preview has no source URL for the spec, so relative server URLs (or a Swagger 2.0 spec without `host`) would make "Try it out" send requests to a placeholder host. The panel shows a warning when that happens; use absolute server URLs (e.g. `http://localhost:5080/api`) to call the API from the preview.
+
+**Usage:** open the OpenAPI spec in an editor → right-click → _WrenchIT: Preview OpenAPI (Swagger UI)_
+
+---
+
+## Installation
+
+Search for **WrenchIT** in the Extensions view (`jamartif.wrenchit`), or download the `.vsix` from [GitHub Releases](https://github.com/jamartif/WrenchIT/releases) and run **Extensions: Install from VSIX...**.
+
+## Building locally
 
 ```bash
 npm install
 npm run compile
-npx vsce package --allow-missing-repository --skip-license
-# Instalar el .vsix generado:
+npm test
+npx vsce package
+# Install the generated .vsix:
 # Extensions: Install from VSIX...
 ```
 
-## Requisitos
+## Requirements
 
-- Visual Studio Code 1.85 o superior
+- Visual Studio Code 1.85 or later
+
+## License
+
+[MIT](LICENSE) © jamartif. WrenchIT bundles Swagger UI (Apache-2.0) and js-yaml (MIT); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Issues and suggestions: [github.com/jamartif/WrenchIT/issues](https://github.com/jamartif/WrenchIT/issues).

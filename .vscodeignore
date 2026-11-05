@@ -7,3 +7,9 @@ test/**
 tsconfig.json
 **/*.map
 node_modules/**
+images/icon.svg
+.github/**
+.claude/**
+scripts/**
+CLAUDE.md
+package-lock.json

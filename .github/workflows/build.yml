@@ -4,13 +4,13 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
-  # Crea un borrador de release sobre main sin tener que subir el tag a mano.
-  # Al publicar el borrador, GitHub crea el tag vX.Y.Z y ese push lanza el job
-  # build, que adjunta el .vsix a la release.
+  # Creates a draft release on main without pushing the tag by hand.
+  # Publishing the draft makes GitHub create the vX.Y.Z tag, and that push runs
+  # the build job, which attaches the .vsix to the release.
   workflow_dispatch:
     inputs:
       version:
-        description: "Versión (p. ej. 1.2.4)"
+        description: "Version (e.g. 1.2.4)"
         required: true
 
 permissions:
@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Create draft release
-        # La versión llega por env y se valida entera antes de usarla.
+        # The version comes in through env and is validated in full before use.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -33,11 +33,11 @@ jobs:
         run: |
           VERSION="${VERSION#v}"
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Versión inválida. Usa el formato 1.2.4"
+            echo "::error::Invalid version. Use the format 1.2.4"
             exit 1
           fi
           if gh release view "v$VERSION" --repo "$REPO" &>/dev/null; then
-            echo "::error::Ya existe una release v$VERSION"
+            echo "::error::Release v$VERSION already exists"
             exit 1
           fi
           gh release create "v$VERSION" --repo "$REPO" --draft --target "$GITHUB_SHA" \
@@ -68,7 +68,7 @@ jobs:
         run: npm version ${GITHUB_REF#refs/tags/v} --no-git-tag-version
 
       - name: Package extension
-        run: npx vsce package --allow-missing-repository --skip-license
+        run: npx vsce package
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
