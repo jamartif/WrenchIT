@@ -68,7 +68,7 @@ jobs:
         run: npm version ${GITHUB_REF#refs/tags/v} --no-git-tag-version
 
       - name: Package extension
-        run: npx vsce package --allow-missing-repository --skip-license
+        run: npx vsce package
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

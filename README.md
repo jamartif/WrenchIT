@@ -66,13 +66,17 @@ The preview has no source URL for the spec, so relative server URLs (or a Swagge
 
 ---
 
+## Installation
+
+Search for **WrenchIT** in the Extensions view (`jamartif.wrenchit`), or download the `.vsix` from [GitHub Releases](https://github.com/jamartif/WrenchIT/releases) and run **Extensions: Install from VSIX...**.
+
 ## Building locally
 
 ```bash
 npm install
 npm run compile
 npm test
-npx vsce package --allow-missing-repository --skip-license
+npx vsce package
 # Install the generated .vsix:
 # Extensions: Install from VSIX...
 ```
@@ -80,3 +84,9 @@ npx vsce package --allow-missing-repository --skip-license
 ## Requirements
 
 - Visual Studio Code 1.85 or later
+
+## License
+
+[MIT](LICENSE) © jamartif. WrenchIT bundles Swagger UI (Apache-2.0) and js-yaml (MIT); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Issues and suggestions: [github.com/jamartif/WrenchIT/issues](https://github.com/jamartif/WrenchIT/issues).

@@ -15,7 +15,7 @@ npm test
 npm run watch
 
 # Package the extension as a .vsix
-npx vsce package --allow-missing-repository --skip-license
+npx vsce package
 ```
 
 Pure-logic tests live in `test/` and run with `npm test` (no extension host needed). To try the UI: `F5` in VS Code opens an Extension Development Host window.
