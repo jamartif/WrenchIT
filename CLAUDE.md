@@ -67,3 +67,4 @@ El workflow `.github/workflows/build.yml` se dispara en dos situaciones:
 
 - **Push a `main`**: compila y sube el `.vsix` como artefacto de CI (90 días de retención), pero no crea release.
 - **Push de tag `vX.Y.Z`**: además sincroniza la versión en `package.json` y adjunta el `.vsix` al GitHub Release (lo crea si no existe).
+- **Ejecución manual (`workflow_dispatch`) con `version`**: crea un borrador de release `vX.Y.Z` sobre el commit de `main`. Al publicarlo se crea el tag, y ese push compila y adjunta el `.vsix`.
