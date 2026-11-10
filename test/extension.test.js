@@ -183,8 +183,8 @@ function readSwaggerConfig(html) {
     return {};
   }
   SwaggerUIBundle.presets = { apis: { name: 'apis' } };
-  const run = new Function('SwaggerUIBundle', 'window', body);
-  run(SwaggerUIBundle, {});
+  const run = new Function('SwaggerUIBundle', 'window', 'acquireVsCodeApi', body);
+  run(SwaggerUIBundle, { addEventListener() {} }, () => ({ postMessage() {} }));
   assert.ok(captured, 'init script did not call SwaggerUIBundle');
   return captured;
 }
@@ -385,4 +385,15 @@ test('parseOpenApiDocument rejects text that is not a spec', () => {
   assert.throws(() => parseOpenApiDocument('{"hello":"world"}'), /openapi/);
   assert.throws(() => parseOpenApiDocument('just text'), /openapi/);
   assert.throws(() => parseOpenApiDocument('   '), /empty/);
+});
+
+test('Swagger preview sends Try it out requests through the extension host (no CORS)', () => {
+  const html = buildSwaggerUiHtml(
+    { cspSource: 'vscode-resource:', asWebviewUri: (u) => String(u) },
+    { extensionUri: { path: '/ext', with() {} } },
+    { openapi: '3.0.3', info: { title: 'x', version: '1' }, paths: {} }
+  );
+  const config = readSwaggerConfig(html);
+  const req = config.requestInterceptor({ url: 'http://localhost:5080/a' });
+  assert.equal(typeof req.userFetch, 'function');
 });

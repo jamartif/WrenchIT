@@ -62,6 +62,8 @@ It accepts JSON, YAML, a JSON string that contains the spec and, if the text com
 
 The preview has no source URL for the spec, so relative server URLs (or a Swagger 2.0 spec without `host`) would make "Try it out" send requests to a placeholder host. The panel shows a warning when that happens; use absolute server URLs (e.g. `http://localhost:5080/api`) to call the API from the preview.
 
+"Try it out" requests are sent by the extension host rather than the webview, so they are not blocked by CORS. The API still has to be reachable from your machine.
+
 **Usage:** open the OpenAPI spec in an editor → right-click → _WrenchIT: Preview OpenAPI (Swagger UI)_
 
 ---
