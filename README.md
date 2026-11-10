@@ -64,6 +64,8 @@ The preview has no source URL for the spec, so relative server URLs (or a Swagge
 
 "Try it out" requests are sent by the extension host rather than the webview, so they are not blocked by CORS. The API still has to be reachable from your machine.
 
+The preview can call the hosts in the spec's `servers` (or the Swagger 2.0 `host`) right away. The first request to any other host, such as a server URL you type in Swagger UI, asks for confirmation, and the answer lasts until the preview is closed. Requests are cancelled after 30 seconds or when the preview is closed, and request and response bodies are limited to 20 MB.
+
 **Usage:** open the OpenAPI spec in an editor → right-click → _WrenchIT: Preview OpenAPI (Swagger UI)_
 
 ---

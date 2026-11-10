@@ -25,7 +25,10 @@ const {
   buildSwaggerUiHtml,
   parseOpenApiDocument,
   findBaseUrlDependencies,
-  SPEC_BASE_URL
+  SPEC_BASE_URL,
+  runProxyRequest,
+  collectSpecHosts,
+  describeError
 } = require('../out/extension.js');
 
 function cleaned(raw) {
@@ -171,10 +174,11 @@ function readSwaggerConfig(html) {
   const marker = 'SwaggerUIBundle({';
   const callAt = html.indexOf(marker);
   assert.ok(callAt > 0, 'missing SwaggerUIBundle init');
-  const scriptStart = html.lastIndexOf('<script>', callAt);
+  const scriptTag = html.lastIndexOf('<script', callAt);
+  const scriptStart = html.indexOf('>', scriptTag) + 1;
   const closer = /<\/script\s*>/i.exec(html.slice(callAt));
   assert.ok(closer, 'script never closes');
-  const body = html.slice(scriptStart + '<script>'.length, callAt + closer.index);
+  const body = html.slice(scriptStart, callAt + closer.index);
   assert.equal(/<\/script/i.test(body), false, 'spec broke out of the script element');
 
   let captured;
@@ -184,8 +188,15 @@ function readSwaggerConfig(html) {
   }
   SwaggerUIBundle.presets = { apis: { name: 'apis' } };
   const run = new Function('SwaggerUIBundle', 'window', 'acquireVsCodeApi', body);
-  run(SwaggerUIBundle, { addEventListener() {} }, () => ({ postMessage() {} }));
+  const listeners = {};
+  const posted = [];
+  run(
+    SwaggerUIBundle,
+    { addEventListener(type, fn) { listeners[type] = fn; } },
+    () => ({ postMessage(m) { posted.push(m); } })
+  );
   assert.ok(captured, 'init script did not call SwaggerUIBundle');
+  Object.defineProperty(captured, '__webview', { value: { listeners, posted }, enumerable: false });
   return captured;
 }
 
@@ -396,4 +407,180 @@ test('Swagger preview sends Try it out requests through the extension host (no C
   const config = readSwaggerConfig(html);
   const req = config.requestInterceptor({ url: 'http://localhost:5080/a' });
   assert.equal(typeof req.userFetch, 'function');
+});
+
+const PROXY_SPEC = { openapi: '3.0.3', info: { title: 'x', version: '1' }, paths: {} };
+
+function previewHtml() {
+  return buildSwaggerUiHtml(
+    { cspSource: 'vscode-resource:', asWebviewUri: (u) => String(u) },
+    { extensionUri: { path: '/ext', with() {} } },
+    PROXY_SPEC
+  );
+}
+
+test('Swagger preview scripts run with a nonce, not unsafe-inline', () => {
+  const html = previewHtml();
+  const csp = /Content-Security-Policy" content="([^"]*)"/.exec(html)[1];
+  const scriptSrc = /script-src ([^;]*);/.exec(csp)[1];
+  assert.doesNotMatch(scriptSrc, /unsafe-inline|unsafe-eval/);
+  const nonce = /'nonce-([^']+)'/.exec(scriptSrc)[1];
+  const scripts = html.match(/<script\b[^>]*>/g);
+  assert.ok(scripts.length >= 2);
+  for (const tag of scripts) assert.ok(tag.includes(`nonce="${nonce}"`), tag);
+  assert.notEqual(/'nonce-([^']+)'/.exec(previewHtml())[1], nonce, 'a fresh nonce per render');
+});
+
+async function proxyCall(result) {
+  const config = readSwaggerConfig(previewHtml());
+  const { listeners, posted } = config.__webview;
+  const req = config.requestInterceptor({ url: 'http://api.test/a' });
+  const promise = req.userFetch('http://api.test/a', { method: 'GET' });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(posted.length, 1);
+  listeners.message({ data: { type: 'wrenchit.fetchResult', id: posted[0].id, ...result } });
+  return promise;
+}
+
+test('Try it out rejects (does not hang) when the status cannot be a Response', async () => {
+  for (const status of [101, 103, 600]) {
+    await assert.rejects(proxyCall({ ok: true, status, statusText: '', headers: [], body: '' }), /HTTP \d+/);
+  }
+  const res = await proxyCall({ ok: true, status: 201, statusText: 'Created', headers: [['x-a', '1']], body: Buffer.from('hi').toString('base64') });
+  assert.equal(res.status, 201);
+  assert.equal(await res.text(), 'hi');
+  await assert.rejects(proxyCall({ ok: false, error: 'boom' }), /boom/);
+});
+
+function fakeFetch(handler) {
+  const calls = [];
+  const fn = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return handler(url, init);
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+const allowAll = () => true;
+const proxyRequest = (over) => ({ type: 'wrenchit.fetch', id: 1, url: 'http://api.test/x', method: 'GET', headers: {}, ...over });
+
+test('proxy rejects protocols other than http and https', async () => {
+  const fetch = fakeFetch(() => new Response('no'));
+  for (const url of ['file:///etc/passwd', 'ftp://example.com/x', 'data:text/plain,hi']) {
+    const reply = await runProxyRequest(proxyRequest({ url }), { fetch, isHostAllowed: allowAll });
+    assert.equal(reply.ok, false, url);
+    assert.match(reply.error, /Unsupported protocol/);
+  }
+  assert.equal(fetch.calls.length, 0);
+});
+
+test('proxy passes status, headers and body, and drops wire-format headers', async () => {
+  const fetch = fakeFetch(() => new Response('{"a":1}', {
+    status: 418,
+    statusText: 'Teapot',
+    headers: { 'content-type': 'application/json', 'content-encoding': 'gzip', 'content-length': '7', 'x-trace': 'abc' }
+  }));
+  const reply = await runProxyRequest(
+    proxyRequest({ method: 'post', headers: { authorization: 'Bearer t' }, body: Buffer.from('payload').toString('base64') }),
+    { fetch, isHostAllowed: allowAll }
+  );
+  assert.equal(reply.ok, true);
+  assert.equal(reply.status, 418);
+  assert.equal(reply.statusText, 'Teapot');
+  const headers = Object.fromEntries(reply.headers);
+  assert.equal(headers['content-type'], 'application/json');
+  assert.equal(headers['x-trace'], 'abc');
+  assert.equal('content-encoding' in headers, false);
+  assert.equal('content-length' in headers, false);
+  assert.equal(Buffer.from(reply.body, 'base64').toString(), '{"a":1}');
+  const [call] = fetch.calls;
+  assert.equal(call.init.method, 'POST');
+  assert.equal(call.init.headers.authorization, 'Bearer t');
+  assert.equal(Buffer.from(call.init.body).toString(), 'payload');
+  assert.ok(call.init.signal, 'the request can be cancelled');
+});
+
+test('proxy turns network errors into ok:false with the cause', async () => {
+  const fetch = fakeFetch(() => { throw new TypeError('fetch failed', { cause: new Error('connect ECONNREFUSED 127.0.0.1:1') }); });
+  const reply = await runProxyRequest(proxyRequest(), { fetch, isHostAllowed: allowAll });
+  assert.deepEqual(reply, { ok: false, error: 'fetch failed: connect ECONNREFUSED 127.0.0.1:1' });
+});
+
+function hangingFetch() {
+  return fakeFetch((_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+  }));
+}
+
+test('proxy cancels a request that takes too long, or when the preview closes', async () => {
+  const timedOut = await runProxyRequest(proxyRequest(), { fetch: hangingFetch(), isHostAllowed: allowAll, timeoutMs: 20 });
+  assert.equal(timedOut.ok, false);
+  assert.match(timedOut.error, /No response after/);
+
+  const lifetime = new AbortController();
+  const pending = runProxyRequest(proxyRequest(), { fetch: hangingFetch(), isHostAllowed: allowAll, signal: lifetime.signal });
+  lifetime.abort();
+  const closed = await pending;
+  assert.equal(closed.ok, false);
+  assert.match(closed.error, /preview was closed/);
+});
+
+test('proxy refuses bodies above the size limit in both directions', async () => {
+  const big = fakeFetch(() => new Response('x'.repeat(2048)));
+  const down = await runProxyRequest(proxyRequest(), { fetch: big, isHostAllowed: allowAll, maxBytes: 1024 });
+  assert.equal(down.ok, false);
+  assert.match(down.error, /response is larger than/);
+
+  const declared = fakeFetch(() => new Response('x', { headers: { 'content-length': '999999' } }));
+  const early = await runProxyRequest(proxyRequest(), { fetch: declared, isHostAllowed: allowAll, maxBytes: 1024 });
+  assert.match(early.error, /response is larger than/);
+
+  const ok = fakeFetch(() => new Response('fine'));
+  const up = await runProxyRequest(
+    proxyRequest({ method: 'POST', body: Buffer.alloc(4096).toString('base64') }),
+    { fetch: ok, isHostAllowed: allowAll, maxBytes: 1024 }
+  );
+  assert.match(up.error, /request body is larger than/);
+  assert.equal(ok.calls.length, 0);
+});
+
+test('proxy only calls hosts the host check allows', async () => {
+  const fetch = fakeFetch(() => new Response('ok'));
+  const asked = [];
+  const reply = await runProxyRequest(proxyRequest({ url: 'http://127.0.0.1:8080/admin' }), {
+    fetch,
+    isHostAllowed: (url) => { asked.push(url.host); return false; }
+  });
+  assert.equal(reply.ok, false);
+  assert.match(reply.error, /127\.0\.0\.1:8080 are not allowed/);
+  assert.deepEqual(asked, ['127.0.0.1:8080']);
+  assert.equal(fetch.calls.length, 0);
+});
+
+test('collectSpecHosts lists the absolute servers the spec declares', () => {
+  const hosts = collectSpecHosts({
+    openapi: '3.0.3',
+    servers: [
+      { url: 'https://API.example.com/v1' },
+      { url: '/relative' },
+      { url: 'https://{env}.example.com:{port}', variables: { env: { default: 'prod', enum: ['prod', 'staging'] }, port: { default: '8443' } } },
+      { url: 'https://{unknown}.example.com' }
+    ],
+    paths: {
+      '/a': { servers: [{ url: 'http://localhost:5080' }], get: { servers: [{ url: '//cdn.example.com' }] } }
+    }
+  });
+  assert.deepEqual([...hosts].sort(), [
+    'api.example.com', 'cdn.example.com', 'localhost:5080', 'prod.example.com:8443', 'staging.example.com:8443'
+  ]);
+  assert.deepEqual([...collectSpecHosts({ swagger: '2.0', host: 'petstore.example.com:8080' })], ['petstore.example.com:8080']);
+  assert.deepEqual([...collectSpecHosts({ swagger: '2.0' })], []);
+});
+
+test('describeError adds the cause only when it says something new', () => {
+  assert.equal(describeError(new Error('plain')), 'plain');
+  assert.equal(describeError(new Error('fetch failed', { cause: new Error('ENOTFOUND x') })), 'fetch failed: ENOTFOUND x');
+  assert.equal(describeError(new Error('same', { cause: 'same' })), 'same');
+  assert.equal(describeError('text'), 'text');
 });
