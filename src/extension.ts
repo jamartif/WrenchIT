@@ -694,9 +694,54 @@ function previewOpenApi(context: vscode.ExtensionContext) {
       }
     );
     openApiPanel.onDidDispose(() => { openApiPanel = undefined; });
+    openApiPanel.webview.onDidReceiveMessage(handleProxyMessage);
   }
 
   openApiPanel.webview.html = buildSwaggerUiHtml(openApiPanel.webview, context, spec, darkMode);
+}
+
+interface ProxyRequest {
+  type: 'wrenchit.fetch';
+  id: number;
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: string; // base64
+}
+
+/**
+ * Runs a "Try it out" request on behalf of the webview. The webview origin
+ * (vscode-webview://…) is cross-origin for every API, so a browser fetch fails
+ * CORS unless the server allows it. The extension host has no such restriction.
+ */
+async function handleProxyMessage(message: ProxyRequest): Promise<void> {
+  if (!message || message.type !== 'wrenchit.fetch' || !openApiPanel) return;
+  const panel = openApiPanel;
+  const reply = (payload: Record<string, unknown>) =>
+    panel.webview.postMessage({ type: 'wrenchit.fetchResult', id: message.id, ...payload });
+  try {
+    const url = new URL(message.url);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error(`Unsupported protocol ${url.protocol}`);
+    }
+    const method = String(message.method || 'GET').toUpperCase();
+    const hasBody = message.body !== undefined && method !== 'GET' && method !== 'HEAD';
+    const response = await fetch(url, {
+      method,
+      headers: message.headers,
+      body: hasBody ? Buffer.from(message.body!, 'base64') : undefined,
+      redirect: 'follow'
+    });
+    const headers: Array<[string, string]> = [];
+    response.headers.forEach((value, key) => headers.push([key, value]));
+    // fetch already decoded the body, so drop headers that describe the wire format.
+    const filtered = headers.filter(([k]) => !['content-encoding', 'content-length', 'transfer-encoding'].includes(k));
+    const body = Buffer.from(await response.arrayBuffer()).toString('base64');
+    reply({ ok: true, status: response.status, statusText: response.statusText, headers: filtered, body, url: response.url });
+  } catch (err) {
+    const cause = err instanceof Error && (err as any).cause ? `: ${(err as any).cause.message ?? (err as any).cause}` : '';
+    reply({ ok: false, error: (err instanceof Error ? err.message : String(err)) + cause });
+  }
 }
 
 /**
@@ -966,7 +1011,46 @@ export function buildSwaggerUiHtml(
   <div id="swagger-ui"></div>
   <script src="${bundleJsUri}"></script>
   <script>
+    // "Try it out" requests go through the extension host: the webview origin
+    // is cross-origin for every API, so a direct fetch would fail with CORS.
+    var vscodeApi = acquireVsCodeApi();
+    var pending = {};
+    var nextId = 1;
+    window.addEventListener('message', function (event) {
+      var m = event.data;
+      if (!m || m.type !== 'wrenchit.fetchResult' || !pending[m.id]) return;
+      var p = pending[m.id];
+      delete pending[m.id];
+      if (!m.ok) { p.reject(new TypeError(m.error)); return; }
+      var bytes = Uint8Array.from(atob(m.body), function (c) { return c.charCodeAt(0); });
+      var noBody = m.status === 204 || m.status === 205 || m.status === 304;
+      var res = new Response(noBody ? null : bytes, { status: m.status, statusText: m.statusText, headers: m.headers });
+      p.resolve(res);
+    });
+    function toBase64(buffer) {
+      var bytes = new Uint8Array(buffer), bin = '';
+      for (var i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      return btoa(bin);
+    }
+    async function proxyFetch(url, options) {
+      options = options || {};
+      var headers = {};
+      new Headers(options.headers || {}).forEach(function (v, k) { headers[k] = v; });
+      var body;
+      if (options.body !== undefined && options.body !== null) {
+        var carrier = new Response(options.body);
+        var type = carrier.headers.get('content-type');
+        if (type && !headers['content-type']) headers['content-type'] = type;
+        body = toBase64(await carrier.arrayBuffer());
+      }
+      return new Promise(function (resolve, reject) {
+        var id = nextId++;
+        pending[id] = { resolve: resolve, reject: reject };
+        vscodeApi.postMessage({ type: 'wrenchit.fetch', id: id, url: String(url), method: options.method || 'GET', headers: headers, body: body });
+      });
+    }
     window.ui = SwaggerUIBundle({
+      requestInterceptor: function (req) { req.userFetch = proxyFetch; return req; },
       spec: ${specJson},
       dom_id: '#swagger-ui',
       deepLinking: false,

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.7
+
+- OpenAPI preview: "Try it out" requests are now sent by the extension host instead of the webview, so they no longer fail with CORS errors.
+
 ## 1.2.6
 
 - Everything is in English: command titles, messages and the OpenAPI preview warning.
