@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as jsyaml from 'js-yaml';
+import * as crypto from 'crypto';
 
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
@@ -693,20 +694,248 @@ function previewOpenApi(context: vscode.ExtensionContext) {
         localResourceRoots: [context.extensionUri]
       }
     );
-    openApiPanel.onDidDispose(() => { openApiPanel = undefined; });
+    proxyLifetime = new AbortController();
+    proxyApprovedHosts.clear();
+    openApiPanel.onDidDispose(() => {
+      openApiPanel = undefined;
+      proxyLifetime.abort();
+      proxyApprovedHosts.clear();
+    });
     openApiPanel.webview.onDidReceiveMessage(handleProxyMessage);
   }
+
+  proxyAllowedHosts = collectSpecHosts(spec);
 
   openApiPanel.webview.html = buildSwaggerUiHtml(openApiPanel.webview, context, spec, darkMode);
 }
 
-interface ProxyRequest {
+export interface ProxyRequest {
   type: 'wrenchit.fetch';
   id: number;
   url: string;
   method: string;
   headers: Record<string, string>;
   body?: string; // base64
+}
+
+export type ProxyReply =
+  | { ok: true; status: number; statusText: string; headers: Array<[string, string]>; body: string; url: string }
+  | { ok: false; error: string };
+
+export interface ProxyOptions {
+  fetch: typeof fetch;
+  /** Decides whether the extension may call this URL's host (see isProxyHostAllowed). */
+  isHostAllowed: (url: URL) => boolean | Promise<boolean>;
+  /** Aborts the request, e.g. when the preview is closed. */
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxBytes?: number;
+}
+
+/** A request that has not finished after this long is cancelled. */
+export const PROXY_TIMEOUT_MS = 30_000;
+/** Largest request or response body the proxy carries, in bytes (it travels base64 in memory). */
+export const PROXY_MAX_BYTES = 20 * 1024 * 1024;
+
+/** "message: cause" for fetch errors, whose message alone is just "fetch failed". */
+export function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause: unknown = (err as { cause?: unknown }).cause;
+  if (cause === undefined || cause === null) return err.message;
+  const causeText = cause instanceof Error ? cause.message : String(cause);
+  return causeText && causeText !== err.message ? `${err.message}: ${causeText}` : err.message;
+}
+
+function formatMegabytes(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
+/** Reads the whole body, failing as soon as it grows past maxBytes. */
+async function readLimited(response: Response, maxBytes: number, abort: (reason: Error) => void): Promise<Buffer> {
+  const tooLarge = () => new Error(`The response is larger than ${formatMegabytes(maxBytes)}; the preview does not load it.`);
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    const err = tooLarge();
+    abort(err);
+    throw err;
+  }
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      const err = tooLarge();
+      abort(err);
+      await reader.cancel(err).catch(() => undefined);
+      throw err;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks, total);
+}
+
+/**
+ * Runs one "Try it out" request on behalf of the webview and returns the reply
+ * to post back. It always settles: network errors, a closed preview, the
+ * timeout and oversized bodies all end in { ok: false }.
+ */
+export async function runProxyRequest(message: ProxyRequest, options: ProxyOptions): Promise<ProxyReply> {
+  const timeoutMs = options.timeoutMs ?? PROXY_TIMEOUT_MS;
+  const maxBytes = options.maxBytes ?? PROXY_MAX_BYTES;
+  const controller = new AbortController();
+  const abort = (reason: Error) => { if (!controller.signal.aborted) controller.abort(reason); };
+  const timer = setTimeout(() => abort(new Error(`No response after ${timeoutMs / 1000} s; the request was cancelled.`)), timeoutMs);
+  const onOuterAbort = () => abort(new Error('The preview was closed; the request was cancelled.'));
+  if (options.signal?.aborted) onOuterAbort();
+  options.signal?.addEventListener('abort', onOuterAbort);
+  try {
+    const url = new URL(message.url);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error(`Unsupported protocol ${url.protocol}`);
+    }
+    if (!(await options.isHostAllowed(url))) {
+      throw new Error(`Requests to ${url.host} are not allowed from this preview.`);
+    }
+    const method = String(message.method || 'GET').toUpperCase();
+    const hasBody = typeof message.body === 'string' && method !== 'GET' && method !== 'HEAD';
+    // base64 grows 4/3: check before decoding so a huge body is never copied.
+    if (hasBody && Math.floor((message.body!.length * 3) / 4) > maxBytes) {
+      throw new Error(`The request body is larger than ${formatMegabytes(maxBytes)}; the preview does not send it.`);
+    }
+    if (controller.signal.aborted) throw controller.signal.reason;
+    const response = await options.fetch(url, {
+      method,
+      headers: message.headers,
+      body: hasBody ? Buffer.from(message.body!, 'base64') : undefined,
+      redirect: 'follow',
+      signal: controller.signal
+    });
+    const headers: Array<[string, string]> = [];
+    response.headers.forEach((value, key) => headers.push([key, value]));
+    // fetch already decoded the body, so drop headers that describe the wire format.
+    const filtered = headers.filter(([k]) => !['content-encoding', 'content-length', 'transfer-encoding'].includes(k.toLowerCase()));
+    const body = (await readLimited(response, maxBytes, abort)).toString('base64');
+    return { ok: true, status: response.status, statusText: response.statusText, headers: filtered, body, url: response.url };
+  } catch (err) {
+    // After an abort, fetch rejects with a generic AbortError: report why it was aborted.
+    const reason = controller.signal.aborted ? controller.signal.reason : err;
+    return { ok: false, error: describeError(reason) };
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', onOuterAbort);
+  }
+}
+
+/** URL.host of a server URL, or undefined when it is relative or invalid. */
+function absoluteHost(url: string): string | undefined {
+  const trimmed = url.trim();
+  if (!isAbsoluteUrl(trimmed)) return undefined;
+  try {
+    return new URL(trimmed.startsWith('//') ? `https:${trimmed}` : trimmed).host.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Every URL a Server Object can produce, trying each enum value of its variables (capped). */
+function expandServerUrlVariants(server: Record<string, any>, limit = 64): string[] {
+  const variables = server.variables && typeof server.variables === 'object' ? server.variables : {};
+  let urls: string[] = [String(server.url)];
+  for (const [name, variable] of Object.entries<any>(variables)) {
+    if (!variable || typeof variable !== 'object') continue;
+    const values = new Set<string>();
+    if (variable.default !== undefined) values.add(String(variable.default));
+    if (Array.isArray(variable.enum)) variable.enum.forEach((v: unknown) => values.add(String(v)));
+    if (values.size === 0) continue;
+    const token = `{${name}}`;
+    const next: string[] = [];
+    for (const url of urls) {
+      if (!url.includes(token)) { next.push(url); continue; }
+      for (const value of values) {
+        if (next.length >= limit) break;
+        next.push(url.split(token).join(value));
+      }
+    }
+    urls = next;
+  }
+  // A variable without default or enum leaves "{name}" behind: that URL is not known.
+  return urls.filter((url) => !/\{[^{}]*\}/.test(url));
+}
+
+/**
+ * Hosts the spec itself declares: absolute "servers" (top level, per path and
+ * per operation, with their variable values) or the Swagger 2.0 "host".
+ * "Try it out" may call these without asking.
+ */
+export function collectSpecHosts(spec: unknown): Set<string> {
+  const hosts = new Set<string>();
+  if (!spec || typeof spec !== 'object') return hosts;
+  const doc = spec as Record<string, any>;
+  if (typeof doc.swagger === 'string') {
+    if (typeof doc.host === 'string' && doc.host.trim()) {
+      const host = absoluteHost(`//${doc.host.trim()}`);
+      if (host) hosts.add(host);
+    }
+    return hosts;
+  }
+  const addServers = (servers: unknown) => {
+    if (!Array.isArray(servers)) return;
+    for (const server of servers) {
+      if (!server || typeof server.url !== 'string') continue;
+      for (const url of expandServerUrlVariants(server)) {
+        const host = absoluteHost(url);
+        if (host) hosts.add(host);
+      }
+    }
+  };
+  addServers(doc.servers);
+  const paths = doc.paths && typeof doc.paths === 'object' ? doc.paths : {};
+  for (const item of Object.values<any>(paths)) {
+    if (!item || typeof item !== 'object') continue;
+    addServers(item.servers);
+    for (const method of HTTP_METHODS) {
+      if (item[method]) addServers(item[method].servers);
+    }
+  }
+  return hosts;
+}
+
+/** Hosts declared by the spec in the preview, plus the ones the user allowed for this panel. */
+let proxyAllowedHosts = new Set<string>();
+const proxyApprovedHosts = new Set<string>();
+const proxyPendingApprovals = new Map<string, Thenable<boolean>>();
+/** Aborted when the preview is closed, cancelling every request still in flight. */
+let proxyLifetime = new AbortController();
+
+/**
+ * The webview may only reach the hosts its spec declares. Any other host (a
+ * server URL typed in Swagger UI, or a script injected through the spec) needs
+ * the user's confirmation once per preview, so the preview cannot be used to
+ * probe localhost or the internal network behind the user's back.
+ */
+async function isProxyHostAllowed(url: URL): Promise<boolean> {
+  const host = url.host.toLowerCase();
+  if (proxyAllowedHosts.has(host) || proxyApprovedHosts.has(host)) return true;
+  let approval = proxyPendingApprovals.get(host);
+  if (!approval) {
+    approval = vscode.window
+      .showWarningMessage(
+        `The OpenAPI preview wants to send a request to ${host}, which is not one of the spec's servers. Allow requests to this host while the preview is open?`,
+        { modal: true },
+        'Allow'
+      )
+      .then((choice) => {
+        proxyPendingApprovals.delete(host);
+        if (choice === 'Allow') proxyApprovedHosts.add(host);
+        return choice === 'Allow';
+      });
+    proxyPendingApprovals.set(host, approval);
+  }
+  return approval;
 }
 
 /**
@@ -717,30 +946,13 @@ interface ProxyRequest {
 async function handleProxyMessage(message: ProxyRequest): Promise<void> {
   if (!message || message.type !== 'wrenchit.fetch' || !openApiPanel) return;
   const panel = openApiPanel;
-  const reply = (payload: Record<string, unknown>) =>
-    panel.webview.postMessage({ type: 'wrenchit.fetchResult', id: message.id, ...payload });
-  try {
-    const url = new URL(message.url);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      throw new Error(`Unsupported protocol ${url.protocol}`);
-    }
-    const method = String(message.method || 'GET').toUpperCase();
-    const hasBody = message.body !== undefined && method !== 'GET' && method !== 'HEAD';
-    const response = await fetch(url, {
-      method,
-      headers: message.headers,
-      body: hasBody ? Buffer.from(message.body!, 'base64') : undefined,
-      redirect: 'follow'
-    });
-    const headers: Array<[string, string]> = [];
-    response.headers.forEach((value, key) => headers.push([key, value]));
-    // fetch already decoded the body, so drop headers that describe the wire format.
-    const filtered = headers.filter(([k]) => !['content-encoding', 'content-length', 'transfer-encoding'].includes(k));
-    const body = Buffer.from(await response.arrayBuffer()).toString('base64');
-    reply({ ok: true, status: response.status, statusText: response.statusText, headers: filtered, body, url: response.url });
-  } catch (err) {
-    const cause = err instanceof Error && (err as any).cause ? `: ${(err as any).cause.message ?? (err as any).cause}` : '';
-    reply({ ok: false, error: (err instanceof Error ? err.message : String(err)) + cause });
+  const reply = await runProxyRequest(message, {
+    fetch,
+    isHostAllowed: isProxyHostAllowed,
+    signal: proxyLifetime.signal
+  });
+  if (openApiPanel === panel) {
+    void panel.webview.postMessage({ type: 'wrenchit.fetchResult', id: message.id, ...reply });
   }
 }
 
@@ -973,6 +1185,7 @@ export function buildSwaggerUiHtml(
   const redirectJson = embedJsonForScript(String(redirectUri));
   const htmlClass = darkMode ? ' class="dark-mode"' : '';
   const warningHtml = buildBaseUrlWarning(spec);
+  const nonce = crypto.randomBytes(16).toString('base64');
 
   // BaseLayout: StandaloneLayout draws an "Explore" bar with an empty URL.
   // Clicking it (or pressing Enter) calls download("") and replaces the spec
@@ -993,7 +1206,7 @@ export function buildSwaggerUiHtml(
 <html lang="en"${htmlClass}>
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} https: data: blob:; font-src ${webview.cspSource} data:; connect-src http: https:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https: data: blob:; font-src ${webview.cspSource} data:; connect-src http: https:;">
   <link rel="stylesheet" href="${cssUri}">
   <title>Preview OpenAPI</title>
   <style>
@@ -1009,8 +1222,8 @@ export function buildSwaggerUiHtml(
 <body>
   ${warningHtml}
   <div id="swagger-ui"></div>
-  <script src="${bundleJsUri}"></script>
-  <script>
+  <script nonce="${nonce}" src="${bundleJsUri}"></script>
+  <script nonce="${nonce}">
     // "Try it out" requests go through the extension host: the webview origin
     // is cross-origin for every API, so a direct fetch would fail with CORS.
     var vscodeApi = acquireVsCodeApi();
@@ -1022,10 +1235,15 @@ export function buildSwaggerUiHtml(
       var p = pending[m.id];
       delete pending[m.id];
       if (!m.ok) { p.reject(new TypeError(m.error)); return; }
-      var bytes = Uint8Array.from(atob(m.body), function (c) { return c.charCodeAt(0); });
-      var noBody = m.status === 204 || m.status === 205 || m.status === 304;
-      var res = new Response(noBody ? null : bytes, { status: m.status, statusText: m.statusText, headers: m.headers });
-      p.resolve(res);
+      // new Response() throws for statuses it cannot represent (1xx, or > 599):
+      // reject instead, or Swagger UI would wait for this request forever.
+      try {
+        var bytes = Uint8Array.from(atob(m.body), function (c) { return c.charCodeAt(0); });
+        var noBody = m.status === 204 || m.status === 205 || m.status === 304;
+        p.resolve(new Response(noBody ? null : bytes, { status: m.status, statusText: m.statusText, headers: m.headers }));
+      } catch (e) {
+        p.reject(new TypeError('Cannot show the response (HTTP ' + m.status + '): ' + (e && e.message ? e.message : e)));
+      }
     });
     function toBase64(buffer) {
       var bytes = new Uint8Array(buffer), bin = '';

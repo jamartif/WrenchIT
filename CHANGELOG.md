@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.8
+
+- OpenAPI preview: "Try it out" no longer hangs when the server answers with a 1xx status or never answers. Requests are cancelled after 30 seconds or when the preview is closed.
+- OpenAPI preview: requests to hosts that are not in the spec's servers ask for confirmation first, and request and response bodies are limited to 20 MB.
+- OpenAPI preview: inline scripts run with a per-render nonce instead of `unsafe-inline`.
+
 ## 1.2.7
 
 - OpenAPI preview: "Try it out" requests are now sent by the extension host instead of the webview, so they no longer fail with CORS errors.
