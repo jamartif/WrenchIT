@@ -28,7 +28,10 @@ const {
   SPEC_BASE_URL,
   runProxyRequest,
   collectSpecHosts,
-  describeError
+  describeError,
+  decodeBase64Text,
+  assertEmbeddableSpec,
+  PROXY_MAX_REDIRECTS
 } = require('../out/extension.js');
 
 function cleaned(raw) {
@@ -220,7 +223,7 @@ test('Swagger preview survives HTML in the spec and does not use the Explore lay
   assert.equal(html.includes('StandaloneLayout'), false);
   assert.equal(html.includes('swagger-ui-standalone-preset'), false);
   assert.equal(html.includes('window.onload'), false);
-  assert.match(html, /connect-src http: https:/);
+  assert.match(html, /connect-src 'none'/);
   assert.match(html, /<html lang="en" class="dark-mode">/);
   assert.match(config.oauth2RedirectUrl, /oauth2-redirect\.html$/);
   assert.match(webviewHtml(spec, false), /<html lang="en">/);
@@ -583,4 +586,114 @@ test('describeError adds the cause only when it says something new', () => {
   assert.equal(describeError(new Error('fetch failed', { cause: new Error('ENOTFOUND x') })), 'fetch failed: ENOTFOUND x');
   assert.equal(describeError(new Error('same', { cause: 'same' })), 'same');
   assert.equal(describeError('text'), 'text');
+});
+
+function redirectTo(location, status = 302) {
+  return new Response(null, { status, headers: { location } });
+}
+
+test('proxy checks the host of every redirect hop before following it', async () => {
+  const fetch = fakeFetch((url) => (String(url) === 'http://api.test/x'
+    ? redirectTo('http://127.0.0.1:8080/admin')
+    : new Response('secret')));
+  const asked = [];
+  const reply = await runProxyRequest(proxyRequest(), {
+    fetch,
+    isHostAllowed: (url) => { asked.push(url.host); return url.host === 'api.test'; }
+  });
+  assert.equal(reply.ok, false);
+  assert.match(reply.error, /api\.test redirected to 127\.0\.0\.1:8080, which is not allowed/);
+  assert.deepEqual(asked, ['api.test', '127.0.0.1:8080']);
+  assert.deepEqual(fetch.calls.map((c) => c.url), ['http://api.test/x']);
+  assert.equal(fetch.calls[0].init.redirect, 'manual');
+
+  const toFile = fakeFetch(() => redirectTo('file:///etc/passwd'));
+  const refused = await runProxyRequest(proxyRequest(), { fetch: toFile, isHostAllowed: allowAll });
+  assert.match(refused.error, /Unsupported protocol file:/);
+  assert.equal(toFile.calls.length, 1);
+});
+
+test('proxy follows allowed redirects without leaking credentials to another origin', async () => {
+  const fetch = fakeFetch((url) => {
+    if (String(url) === 'http://api.test/x') return redirectTo('/y', 307);
+    if (String(url) === 'http://api.test/y') return redirectTo('https://other.test/z', 303);
+    return new Response('done');
+  });
+  const reply = await runProxyRequest(
+    proxyRequest({
+      method: 'POST',
+      headers: { authorization: 'Bearer t', Cookie: 'a=1', 'content-type': 'application/json', 'x-keep': '1' },
+      body: Buffer.from('{}').toString('base64')
+    }),
+    { fetch, isHostAllowed: allowAll }
+  );
+  assert.equal(reply.ok, true);
+  assert.equal(Buffer.from(reply.body, 'base64').toString(), 'done');
+  assert.equal(reply.url, 'https://other.test/z');
+  const [first, sameOrigin, crossOrigin] = fetch.calls.map((c) => c.init);
+  // 307 on the same origin: method, body and credentials are kept.
+  assert.equal(sameOrigin.method, 'POST');
+  assert.equal(Buffer.from(sameOrigin.body).toString(), '{}');
+  assert.deepEqual(sameOrigin.headers, first.headers);
+  // 303 to another origin: GET without body, credentials or body headers.
+  assert.equal(crossOrigin.method, 'GET');
+  assert.equal(crossOrigin.body, undefined);
+  assert.deepEqual(crossOrigin.headers, { 'x-keep': '1' });
+});
+
+test('proxy gives up on redirect loops', async () => {
+  const fetch = fakeFetch(() => redirectTo('http://api.test/x'));
+  const reply = await runProxyRequest(proxyRequest(), { fetch, isHostAllowed: allowAll });
+  assert.equal(reply.ok, false);
+  assert.match(reply.error, /Too many redirects/);
+  assert.equal(fetch.calls.length, PROXY_MAX_REDIRECTS + 1);
+});
+
+test('proxy timeout does not run while the user is being asked about a host', async () => {
+  const fetch = fakeFetch(() => new Response('ok'));
+  const reply = await runProxyRequest(proxyRequest(), {
+    fetch,
+    isHostAllowed: () => new Promise((resolve) => setTimeout(() => resolve(true), 60)),
+    timeoutMs: 20
+  });
+  assert.equal(reply.ok, true);
+});
+
+test('decodeBase64Text refuses text that is not Base64 or not UTF-8', () => {
+  assert.equal(decodeBase64Text('aG9sYSBtdW5kbw=='), 'hola mundo');
+  assert.equal(decodeBase64Text('aG9sYSBtdW5kbw'), 'hola mundo', 'padding is optional');
+  assert.equal(decodeBase64Text(' aG9s\nYSBt dW5kbw== '), 'hola mundo', 'whitespace is ignored');
+  assert.equal(decodeBase64Text('8J-YgA'), '\u{1F600}', 'URL-safe alphabet');
+  assert.equal(decodeBase64Text('not base64!'), undefined);
+  assert.equal(decodeBase64Text('{"a":1}'), undefined);
+  assert.equal(decodeBase64Text('abcde'), undefined, 'impossible length');
+  assert.equal(decodeBase64Text('/9j/4AAQ'), undefined, 'binary data is not UTF-8 text');
+  assert.equal(decodeBase64Text('   '), undefined);
+});
+
+test('assertEmbeddableSpec stops YAML alias bombs and cycles', () => {
+  const bomb = ['openapi: 3.0.0', 'a: &a [x,x,x,x,x,x,x,x,x,x]']
+    .concat('bcdefghij'.split('').map((name, i, all) =>
+      `${name}: &${name} [${Array(10).fill('*' + (i ? all[i - 1] : 'a')).join(',')}]`))
+    .join('\n');
+  assert.throws(() => assertEmbeddableSpec(parseOpenApiDocument(bomb)), /too large to preview/);
+  assert.throws(() => assertEmbeddableSpec(parseOpenApiDocument('openapi: 3.0.0\na: &a\n  self: *a')), /contain itself/);
+  // A shared (not cyclic) alias and an ordinary spec are fine.
+  assertEmbeddableSpec(parseOpenApiDocument('openapi: 3.0.0\na: &a {k: 1}\nb: *a\nc: *a'));
+  assert.throws(() => assertEmbeddableSpec({ openapi: '3.0.0', list: [1, 2, 3] }, 3), /too large/);
+});
+
+test('cleaning broken input stays fast (no quadratic scans)', () => {
+  const inputs = [
+    '{"a":' + '/'.repeat(100000) + 'x}',
+    '/"' + '/'.repeat(100000),
+    '"{'.repeat(30000),
+    ':"{'.repeat(50000),
+    ':"['.repeat(50000) + ']"'.repeat(10)
+  ];
+  const start = process.hrtime.bigint();
+  for (const input of inputs) assert.equal(cleanAndParseJson(input).ok, false);
+  const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+  // These took between 5 and 60 seconds each before the scanners were linear.
+  assert.ok(elapsedMs < 3000, `took ${elapsedMs.toFixed(0)} ms`);
 });

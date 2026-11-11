@@ -36,9 +36,9 @@ function replaceSelection(editor: vscode.TextEditor, selection: vscode.Selection
 }
 
 function replaceWholeDocument(editor: vscode.TextEditor, newText: string) {
-  const fullRange = new vscode.Range(
-    editor.document.positionAt(0),
-    editor.document.positionAt(editor.document.getText().length)
+  // validateRange clamps to the end of the document without copying its text.
+  const fullRange = editor.document.validateRange(
+    new vscode.Range(0, 0, editor.document.lineCount, 0)
   );
   editor.edit(editBuilder => editBuilder.replace(fullRange, newText));
 }
@@ -75,11 +75,30 @@ function decodeBase64() {
     return;
   }
 
+  const decoded = decodeBase64Text(text);
+  if (decoded === undefined) {
+    vscode.window.showErrorMessage('WrenchIT: The selected text is not valid Base64 for UTF-8 text.');
+    return;
+  }
+  replaceSelection(editor, selection, decoded);
+}
+
+/**
+ * Decodes Base64 (standard or URL-safe, padding optional, whitespace ignored)
+ * into UTF-8 text. Returns undefined when the input is not Base64 or the bytes
+ * are not UTF-8: Buffer.from() never throws, it silently skips what it cannot
+ * read, and the selection would be replaced with garbage.
+ */
+export function decodeBase64Text(text: string): string | undefined {
+  const compact = text.replace(/\s+/g, '');
+  if (!compact || !/^[A-Za-z0-9+/_-]*={0,2}$/.test(compact)) return undefined;
+  const unpadded = compact.replace(/=+$/, '');
+  if (unpadded.length % 4 === 1) return undefined;
+  const bytes = Buffer.from(unpadded.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
   try {
-    const decoded = Buffer.from(text.trim(), 'base64').toString('utf8');
-    replaceSelection(editor, selection, decoded);
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
-    vscode.window.showErrorMessage('WrenchIT: The selected text is not valid Base64.');
+    return undefined;
   }
 }
 
@@ -150,7 +169,7 @@ export function cleanAndParseJson(raw: string): ParseResult {
     //    outer quotes by making the engine unescape everything in one shot
     s => wrapAndUnescape(s.trim()),
     // 5. Forward-slash patterns + one-pass backslash removal
-    s => s.trim().replace(/(?<![A-Za-z0-9._-])\/+(?=")/g, '').replace(/\\"/g, '"'),
+    s => stripSlashesBeforeQuotes(s.trim()).replace(/\\"/g, '"'),
     // 6. Symmetrical forward-slash wrapping on both sides of strings:
     //    /"key/"  //"val//"  ///"x///"
     //    Backslashes are left for unescapeOneLayer: they are JSON escapes, not
@@ -158,12 +177,16 @@ export function cleanAndParseJson(raw: string): ParseResult {
     //    trailing / is safe.
     //    Note: : excluded from lookbehind because :///"val///" is a Grafana pattern,
     //    not a URL (real URLs have :// followed by domain letters, never by ").
-    s => s.trim().replace(/(?<![A-Za-z0-9._-])\/+(")([^"]*?)\/+(")/g, '$1$2$3'),
+    s => stripSymmetricSlashes(s.trim()),
     // 7. Full Grafana deep-clean (multi-pass, all patterns)
-    s => grafanaDeepClean(s.trim()),
+    s => deepClean(s),
     // 8. Deep-clean + unwrap (for double-wrapped content)
-    s => tryUnwrapString(grafanaDeepClean(s.trim())),
+    s => tryUnwrapString(deepClean(s)),
   ];
+
+  // Strategies 7 and 8 share the deep clean, the most expensive step.
+  let deepCleaned: string | undefined;
+  const deepClean = (s: string) => deepCleaned ??= grafanaDeepClean(s.trim());
 
   let bestAttempt = raw;
 
@@ -178,8 +201,8 @@ export function cleanAndParseJson(raw: string): ParseResult {
     // Even when the text is already valid JSON, Grafana often leaves objects and
     // arrays inside strings ("{\"k\":1}", "[{...}]"). They are unwrapped here.
     const finalized = finalizeJsonText(cleaned);
-    if (jsonParsable(finalized)) {
-      return { ok: true, value: JSON.parse(finalized), bestAttempt: finalized };
+    if (finalized) {
+      return { ok: true, value: finalized.value, bestAttempt: finalized.text };
     }
   }
 
@@ -247,52 +270,134 @@ function wrapAndUnescape(s: string): string {
  */
 function unquoteJsonStringValues(s: string): string {
   let result = s;
-  let changed = true;
+  // Each pass is linear: brackets are matched once with a stack instead of
+  // rescanning to the end of the text for every candidate, which took minutes
+  // on a large truncated log. Candidates nested inside a value unquoted in this
+  // pass are picked up by the next one.
+  for (;;) {
+    const next = unquotePass(result, '{', '}') ?? unquotePass(result, '[', ']');
+    if (next === undefined) return result;
+    result = next;
+  }
+}
 
-  while (changed) {
-    changed = false;
+/** One left-to-right pass of unquoteJsonStringValues; undefined when nothing changed. */
+function unquotePass(text: string, open: string, close: string): string | undefined {
+  const pattern = `:"${open}`;
+  if (!text.includes(pattern)) return undefined;
 
-    for (const [open, close] of [['{', '}'], ['[', ']']] as [string, string][]) {
-      let searchFrom = 0;
-
-      while (searchFrom < result.length) {
-        const pattern = `:"${open}`;
-        const idx = result.indexOf(pattern, searchFrom);
-        if (idx === -1) break;
-
-        const quotePos = idx + 1; // position of the opening "
-        const openPos  = idx + 2; // position of { or [
-
-        // Balance brackets to find the matching close
-        let depth = 1;
-        let pos   = openPos + 1;
-        while (pos < result.length && depth > 0) {
-          if      (result[pos] === open)  { depth++; }
-          else if (result[pos] === close) { depth--; }
-          pos++;
-        }
-
-        const closePos = pos - 1; // position of } or ]
-        const inner = result.slice(openPos, closePos + 1);
-
-        // Only strip if the closing bracket is immediately followed by " and the
-        // inside is JSON. Otherwise a string like "{not json}" would be damaged.
-        if (closePos + 1 < result.length && result[closePos + 1] === '"' && jsonParsable(inner)) {
-          result =
-            result.slice(0, quotePos) +
-            result.slice(quotePos + 1, closePos + 1) +
-            result.slice(closePos + 2);
-          changed = true;
-          break; // restart outer loop
-        } else {
-          searchFrom = idx + 1;
-        }
-      }
-      if (changed) break;
-    }
+  // closeOf[i] = index of the bracket that closes the one opened at i.
+  const closeOf = new Map<number, number>();
+  const stack: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === open) stack.push(i);
+    else if (c === close && stack.length) closeOf.set(stack.pop()!, i);
   }
 
-  return result;
+  const parts: string[] = [];
+  let copiedTo = 0;
+  let searchFrom = 0;
+  for (;;) {
+    const idx = text.indexOf(pattern, searchFrom);
+    if (idx === -1) break;
+    searchFrom = idx + 1;
+
+    const quotePos = idx + 1; // position of the opening "
+    const openPos  = idx + 2; // position of { or [
+    const closePos = closeOf.get(openPos);
+    // Only strip if the closing bracket is immediately followed by " and the
+    // inside is JSON. Otherwise a string like "{not json}" would be damaged.
+    if (closePos === undefined || text[closePos + 1] !== '"') continue;
+    const inner = text.slice(openPos, closePos + 1);
+    if (!jsonParsable(inner)) continue;
+
+    parts.push(text.slice(copiedTo, quotePos), inner);
+    copiedTo = closePos + 2;
+    searchFrom = copiedTo;
+  }
+
+  if (parts.length === 0) return undefined;
+  parts.push(text.slice(copiedTo));
+  return parts.join('');
+}
+
+const URL_CHAR = /[A-Za-z0-9._-]/;
+
+/**
+ * Where the removable part of the slash run [runStart, runEnd) begins. A run
+ * that follows a URL character keeps its first slash ("https://x/a/" stays a
+ * URL); any other run is a Grafana artifact and goes away whole.
+ */
+function removableSlashesStart(s: string, runStart: number, runEnd: number): number {
+  const keepFirst = runStart > 0 && URL_CHAR.test(s[runStart - 1]);
+  return keepFirst ? runStart + 1 : runStart;
+}
+
+/**
+ * Removes the slashes Grafana puts right before a double quote:
+ *   /"key"  ///"key"  :///"val"
+ *
+ * Hand-written scanner, equivalent to replacing
+ * /(?<![A-Za-z0-9._-])\/+(?=")/g with '' but linear: that regex retried from
+ * every slash of a run, so a long run of slashes froze the editor.
+ */
+function stripSlashesBeforeQuotes(s: string): string {
+  if (!s.includes('/"')) return s;
+  const parts: string[] = [];
+  let copiedTo = 0;
+  let i = s.indexOf('/');
+  while (i !== -1) {
+    let end = i;
+    while (s[end] === '/') end++;
+    if (s[end] === '"') {
+      parts.push(s.slice(copiedTo, removableSlashesStart(s, i, end)));
+      copiedTo = end;
+    }
+    i = s.indexOf('/', end);
+  }
+  parts.push(s.slice(copiedTo));
+  return parts.join('');
+}
+
+/**
+ * Removes symmetrical slash wrapping around strings:
+ *   /"key/"   //"value//"   ///"x///"
+ *
+ * Slashes are required on BOTH sides, so a URL with a trailing / is safe. A
+ * ":" before the run does not protect it: :///"val///" is a Grafana pattern
+ * (real URLs have :// followed by the host, never directly by a quote).
+ *
+ * Hand-written scanner, equivalent to replacing
+ * /(?<![A-Za-z0-9._-])\/+(")([^"]*?)\/+(")/g with '$1$2$3' but linear.
+ */
+function stripSymmetricSlashes(s: string): string {
+  if (!s.includes('/"')) return s;
+  const parts: string[] = [];
+  let copiedTo = 0;
+  let i = s.indexOf('/');
+  while (i !== -1) {
+    let end = i;
+    while (s[end] === '/') end++;
+    if (s[end] !== '"') {
+      i = s.indexOf('/', end);
+      continue;
+    }
+    const closeQuote = s.indexOf('"', end + 1);
+    if (closeQuote === -1) break;
+    const start = removableSlashesStart(s, i, end);
+    let contentEnd = closeQuote;
+    while (contentEnd > end + 1 && s[contentEnd - 1] === '/') contentEnd--;
+    if (start < end && contentEnd < closeQuote) {
+      parts.push(s.slice(copiedTo, start), '"', s.slice(end + 1, contentEnd), '"');
+      copiedTo = closeQuote + 1;
+      i = s.indexOf('/', copiedTo);
+    } else {
+      i = s.indexOf('/', end + 1);
+    }
+  }
+  parts.push(s.slice(copiedTo));
+  return parts.join('');
 }
 
 /**
@@ -361,17 +466,22 @@ function findMatchingBracket(s: string, openIdx: number): number {
  */
 function stripQuotedContainers(input: string): string {
   let s = input;
+  // Every candidate quote scans ahead for its closing bracket, which is
+  // quadratic on text full of unclosed `"{` (a truncated log). The budget caps
+  // that work at a multiple of the input; real documents stay far below it.
+  const budget = { left: 1_000_000 + input.length * 64 };
   for (let guard = 0; guard < 50; guard++) {
-    const next = stripOneQuotedContainer(s);
+    const next = stripOneQuotedContainer(s, budget);
     if (next === s) return s;
     s = next;
   }
   return s;
 }
 
-function stripOneQuotedContainer(s: string): string {
+function stripOneQuotedContainer(s: string, budget: { left: number }): string {
   for (let i = 0; i < s.length; i++) {
     if (s[i] !== '"' || isEscapedQuote(s, i)) continue;
+    if (budget.left <= 0) return s;
 
     let openAt = i + 1;
     while (openAt < s.length && /\s/.test(s[openAt])) openAt++;
@@ -379,6 +489,7 @@ function stripOneQuotedContainer(s: string): string {
     if (open !== '{' && open !== '[') continue;
 
     const closeIdx = findMatchingBracket(s, openAt);
+    budget.left -= (closeIdx < 0 ? s.length : closeIdx) - openAt;
     if (closeIdx < 0) continue;
 
     let quoteAt = closeIdx + 1;
@@ -451,96 +562,102 @@ function promoteEmbeddedJsonStrings(text: string): string {
   return current;
 }
 
+const JSON_SCALAR = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/y;
+
+function isJsonWhitespace(ch: string): boolean {
+  return ch === ' ' || ch === '\n' || ch === '\r' || ch === '\t';
+}
+
+/**
+ * Returns the same string when nothing is promoted. Only the promoted
+ * literals are copied; the text between them is sliced in one piece.
+ */
 function promoteOnce(json: string): string {
   const stack: Array<'object' | 'array'> = [];
   type Expect = 'value' | 'key' | 'colon' | 'comma-or-end';
   let expect: Expect = 'value';
-  let out = '';
+  const parts: string[] = [];
+  let copiedTo = 0;
   let i = 0;
 
   while (i < json.length) {
-    const ws = i;
-    while (i < json.length && /\s/.test(json[i])) i++;
-    out += json.slice(ws, i);
-    if (i >= json.length) break;
-
     const ch = json[i];
-    if (ch === '{') {
+    if (isJsonWhitespace(ch)) {
+      i++;
+    } else if (ch === '{') {
       stack.push('object');
-      out += ch;
       i++;
       expect = 'key';
-      continue;
-    }
-    if (ch === '[') {
+    } else if (ch === '[') {
       stack.push('array');
-      out += ch;
       i++;
       expect = 'value';
-      continue;
-    }
-    if (ch === '}' || ch === ']') {
+    } else if (ch === '}' || ch === ']') {
       stack.pop();
-      out += ch;
       i++;
       expect = 'comma-or-end';
-      continue;
-    }
-    if (ch === ':') {
-      out += ch;
+    } else if (ch === ':') {
       i++;
       expect = 'value';
-      continue;
-    }
-    if (ch === ',') {
-      out += ch;
+    } else if (ch === ',') {
       i++;
       expect = stack[stack.length - 1] === 'object' ? 'key' : 'value';
-      continue;
-    }
-    if (ch === '"') {
+    } else if (ch === '"') {
       const end = scanStringEnd(json, i);
-      const literal = json.slice(i, end);
       const isValue: boolean = expect === 'value';
-      out += isValue ? tryPromoteStringLiteral(literal) : literal;
+      // Cheap pre-check: only a string that starts with { or [ can be promoted.
+      if (isValue && end - i > 3) {
+        const literal = json.slice(i, end);
+        const promoted = tryPromoteStringLiteral(literal);
+        if (promoted !== literal) {
+          parts.push(json.slice(copiedTo, i), promoted);
+          copiedTo = end;
+        }
+      }
       i = end;
       expect = isValue ? 'comma-or-end' : 'colon';
-      continue;
+    } else {
+      JSON_SCALAR.lastIndex = i;
+      const match = JSON_SCALAR.exec(json);
+      if (!match) break;
+      i += match[0].length;
+      expect = 'comma-or-end';
     }
-
-    const match = /^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/.exec(json.slice(i));
-    if (!match) {
-      out += json.slice(i);
-      return out;
-    }
-    out += match[0];
-    i += match[0].length;
-    expect = 'comma-or-end';
   }
 
-  return out;
+  if (parts.length === 0) return json;
+  parts.push(json.slice(copiedTo));
+  return parts.join('');
 }
 
-function finalizeJsonText(text: string): string {
+/**
+ * Unwraps a document that is a JSON string and promotes embedded containers.
+ * Returns undefined when the text is not JSON, and the parsed value otherwise
+ * so callers do not have to parse a large document again.
+ */
+function finalizeJsonText(text: string): { text: string; value: unknown } | undefined {
   let current = text.trim();
-
-  for (let i = 0; i < 5; i++) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(current);
-    } catch {
-      return current;
+  let value: unknown;
+  try {
+    value = JSON.parse(current);
+  } catch {
+    return undefined;
+  }
+  if (typeof value === 'string') {
+    const inner = value.trim();
+    if (inner.startsWith('{') || inner.startsWith('[')) {
+      try {
+        value = JSON.parse(inner);
+        current = inner;
+      } catch {
+        // A plain string that merely starts with a bracket: keep it as is.
+      }
     }
-    if (typeof parsed !== 'string') break;
-    const inner = parsed.trim();
-    if (!(inner.startsWith('{') || inner.startsWith('[')) || !jsonParsable(inner)) {
-      return current;
-    }
-    current = inner;
   }
 
+  // promoteEmbeddedJsonStrings only returns text it has already parsed.
   const promoted = promoteEmbeddedJsonStrings(current);
-  return jsonParsable(promoted) ? promoted : current;
+  return promoted === current ? { text: current, value } : { text: promoted, value: JSON.parse(promoted) };
 }
 
 /**
@@ -576,12 +693,12 @@ function grafanaDeepClean(s: string): string {
   // real URLs have :// followed by domain letters, never directly by ".
   // Only forward slashes. A backslash before a quote is a JSON escape (`\"`)
   // and has to survive until unescapeOneLayer, otherwise `\"world\"` collapses.
-  result = result.replace(/(?<![A-Za-z0-9._-])\/+(")([^"]*?)\/+(")/g, '$1$2$3');
+  result = stripSymmetricSlashes(result);
 
   // Remove forward slashes immediately before a double-quote when they are
   // NOT part of a URL (i.e. not preceded by letters, digits, dot…).
   // Covers:  /"key"  ///"key"  \/"key"  :///"val"  and similar Grafana artifacts.
-  result = result.replace(/(?<![A-Za-z0-9._-])\/+(?=")/g, '');
+  result = stripSlashesBeforeQuotes(result);
 
   // Unescape one layer at a time and, after each layer, drop the quotes Grafana
   // leaves glued to braces and brackets. Stop as soon as the text parses so
@@ -595,8 +712,8 @@ function grafanaDeepClean(s: string): string {
     result = unescaped;
 
     // Unescaping can reveal new /" sequences (e.g. /\" → /").
-    result = result.replace(/(?<![A-Za-z0-9._-])\/+(")([^"]*?)\/+(")/g, '$1$2$3');
-    result = result.replace(/(?<![A-Za-z0-9._-])\/+(?=")/g, '');
+    result = stripSymmetricSlashes(result);
+    result = stripSlashesBeforeQuotes(result);
   }
 
   return normalizeLooseJson(result);
@@ -671,6 +788,7 @@ function previewOpenApi(context: vscode.ExtensionContext) {
   let spec: unknown;
   try {
     spec = parseOpenApiDocument(raw);
+    assertEmbeddableSpec(spec);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'WrenchIT: Could not read the spec.';
     vscode.window.showErrorMessage(message);
@@ -694,7 +812,6 @@ function previewOpenApi(context: vscode.ExtensionContext) {
         localResourceRoots: [context.extensionUri]
       }
     );
-    proxyLifetime = new AbortController();
     proxyApprovedHosts.clear();
     openApiPanel.onDidDispose(() => {
       openApiPanel = undefined;
@@ -704,6 +821,10 @@ function previewOpenApi(context: vscode.ExtensionContext) {
     openApiPanel.webview.onDidReceiveMessage(handleProxyMessage);
   }
 
+  // Rendering replaces the page: requests of the previous one are cancelled so
+  // a late reply cannot be delivered to the new page, whose ids start again at 1.
+  if (!proxyLifetime.signal.aborted) proxyLifetime.abort();
+  proxyLifetime = new AbortController();
   proxyAllowedHosts = collectSpecHosts(spec);
 
   openApiPanel.webview.html = buildSwaggerUiHtml(openApiPanel.webview, context, spec, darkMode);
@@ -736,6 +857,14 @@ export interface ProxyOptions {
 export const PROXY_TIMEOUT_MS = 30_000;
 /** Largest request or response body the proxy carries, in bytes (it travels base64 in memory). */
 export const PROXY_MAX_BYTES = 20 * 1024 * 1024;
+
+/** Redirects followed for one request before giving up. */
+export const PROXY_MAX_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** Not forwarded when a redirect leaves the origin the request was meant for. */
+const CREDENTIAL_HEADERS = ['authorization', 'cookie', 'proxy-authorization'];
+/** Dropped when a redirect turns the request into a body-less GET. */
+const BODY_HEADERS = ['content-type', 'content-length', 'content-encoding', 'content-language', 'content-location'];
 
 /** "message: cause" for fetch errors, whose message alone is just "fetch failed". */
 export function describeError(err: unknown): string {
@@ -788,38 +917,78 @@ export async function runProxyRequest(message: ProxyRequest, options: ProxyOptio
   const maxBytes = options.maxBytes ?? PROXY_MAX_BYTES;
   const controller = new AbortController();
   const abort = (reason: Error) => { if (!controller.signal.aborted) controller.abort(reason); };
-  const timer = setTimeout(() => abort(new Error(`No response after ${timeoutMs / 1000} s; the request was cancelled.`)), timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const startTimer = () => {
+    timer = setTimeout(() => abort(new Error(`No response after ${timeoutMs / 1000} s; the request was cancelled.`)), timeoutMs);
+  };
+  // The host check may ask the user: the time they take to answer is not network time.
+  const ensureAllowed = async (target: URL, redirectedFrom?: URL) => {
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+      throw new Error(`Unsupported protocol ${target.protocol}`);
+    }
+    clearTimeout(timer);
+    const allowed = await options.isHostAllowed(target);
+    if (controller.signal.aborted) throw controller.signal.reason;
+    if (!allowed) {
+      throw new Error(redirectedFrom
+        ? `${redirectedFrom.host} redirected to ${target.host}, which is not allowed from this preview.`
+        : `Requests to ${target.host} are not allowed from this preview.`);
+    }
+    startTimer();
+  };
   const onOuterAbort = () => abort(new Error('The preview was closed; the request was cancelled.'));
   if (options.signal?.aborted) onOuterAbort();
   options.signal?.addEventListener('abort', onOuterAbort);
   try {
-    const url = new URL(message.url);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      throw new Error(`Unsupported protocol ${url.protocol}`);
-    }
-    if (!(await options.isHostAllowed(url))) {
-      throw new Error(`Requests to ${url.host} are not allowed from this preview.`);
-    }
-    const method = String(message.method || 'GET').toUpperCase();
+    let url = new URL(String(message.url));
+    await ensureAllowed(url);
+    let method = String(message.method || 'GET').toUpperCase();
     const hasBody = typeof message.body === 'string' && method !== 'GET' && method !== 'HEAD';
     // base64 grows 4/3: check before decoding so a huge body is never copied.
     if (hasBody && Math.floor((message.body!.length * 3) / 4) > maxBytes) {
       throw new Error(`The request body is larger than ${formatMegabytes(maxBytes)}; the preview does not send it.`);
     }
-    if (controller.signal.aborted) throw controller.signal.reason;
-    const response = await options.fetch(url, {
-      method,
-      headers: message.headers,
-      body: hasBody ? Buffer.from(message.body!, 'base64') : undefined,
-      redirect: 'follow',
-      signal: controller.signal
-    });
-    const headers: Array<[string, string]> = [];
-    response.headers.forEach((value, key) => headers.push([key, value]));
+    let body: RequestInit["body"] = hasBody ? Buffer.from(message.body!, 'base64') : undefined;
+    let headers: Record<string, string> = {};
+    if (message.headers && typeof message.headers === 'object') {
+      for (const [name, value] of Object.entries(message.headers)) {
+        if (typeof value === 'string') headers[name] = value;
+      }
+    }
+
+    // Redirects are followed here, not by fetch, so every hop goes through the
+    // host check: an allowed server cannot bounce the request to localhost or
+    // the internal network, and credentials are not forwarded to another origin.
+    let response: Response;
+    for (let hop = 0; ; hop++) {
+      response = await options.fetch(url, { method, headers, body, redirect: 'manual', signal: controller.signal });
+      const location = REDIRECT_STATUSES.has(response.status) ? response.headers.get('location') : null;
+      if (!location) break;
+      if (hop >= PROXY_MAX_REDIRECTS) throw new Error(`Too many redirects (more than ${PROXY_MAX_REDIRECTS}).`);
+      const next = new URL(location, url);
+      await response.body?.cancel().catch(() => undefined);
+      await ensureAllowed(next, url);
+      const dropNames = new Set<string>();
+      if (response.status === 303 ? method !== 'HEAD' : (response.status === 301 || response.status === 302) && method === 'POST') {
+        if (method !== 'GET') {
+          method = 'GET';
+          body = undefined;
+          BODY_HEADERS.forEach((name) => dropNames.add(name));
+        }
+      }
+      if (next.origin !== url.origin) CREDENTIAL_HEADERS.forEach((name) => dropNames.add(name));
+      if (dropNames.size) {
+        headers = Object.fromEntries(Object.entries(headers).filter(([name]) => !dropNames.has(name.toLowerCase())));
+      }
+      url = next;
+    }
+
+    const responseHeaders: Array<[string, string]> = [];
+    response.headers.forEach((value, key) => responseHeaders.push([key, value]));
     // fetch already decoded the body, so drop headers that describe the wire format.
-    const filtered = headers.filter(([k]) => !['content-encoding', 'content-length', 'transfer-encoding'].includes(k.toLowerCase()));
-    const body = (await readLimited(response, maxBytes, abort)).toString('base64');
-    return { ok: true, status: response.status, statusText: response.statusText, headers: filtered, body, url: response.url };
+    const filtered = responseHeaders.filter(([k]) => !['content-encoding', 'content-length', 'transfer-encoding'].includes(k.toLowerCase()));
+    const replyBody = (await readLimited(response, maxBytes, abort)).toString('base64');
+    return { ok: true, status: response.status, statusText: response.statusText, headers: filtered, body: replyBody, url: response.url || url.href };
   } catch (err) {
     // After an abort, fetch rejects with a generic AbortError: report why it was aborted.
     const reason = controller.signal.aborted ? controller.signal.reason : err;
@@ -946,12 +1115,13 @@ async function isProxyHostAllowed(url: URL): Promise<boolean> {
 async function handleProxyMessage(message: ProxyRequest): Promise<void> {
   if (!message || message.type !== 'wrenchit.fetch' || !openApiPanel) return;
   const panel = openApiPanel;
+  const lifetime = proxyLifetime.signal;
   const reply = await runProxyRequest(message, {
     fetch,
     isHostAllowed: isProxyHostAllowed,
-    signal: proxyLifetime.signal
+    signal: lifetime
   });
-  if (openApiPanel === panel) {
+  if (openApiPanel === panel && !lifetime.aborted) {
     void panel.webview.postMessage({ type: 'wrenchit.fetchResult', id: message.id, ...reply });
   }
 }
@@ -1014,6 +1184,38 @@ function unwrapEncodedDocument(value: unknown): unknown {
     }
   }
   return current;
+}
+
+/** Most values (objects, arrays and scalars) a spec may hold to be previewed. */
+export const SPEC_MAX_NODES = 2_000_000;
+
+/**
+ * Throws when the spec cannot be embedded in the preview as JSON. YAML aliases
+ * are parsed as shared references, so a few lines ("billion laughs") can stand
+ * for billions of values, or for a cycle; serializing them would hang or crash
+ * the extension host.
+ */
+export function assertEmbeddableSpec(spec: unknown, maxNodes = SPEC_MAX_NODES): void {
+  let count = 0;
+  const ancestors = new Set<object>();
+  const visit = (node: unknown): void => {
+    if (++count > maxNodes) {
+      throw new Error('WrenchIT: The spec is too large to preview (it may use YAML aliases that expand to a huge document).');
+    }
+    if (!node || typeof node !== 'object') return;
+    if (ancestors.has(node)) {
+      throw new Error('WrenchIT: The spec cannot be previewed because a YAML alias makes it contain itself.');
+    }
+    ancestors.add(node);
+    for (const value of Array.isArray(node) ? node : Object.values(node)) visit(value);
+    ancestors.delete(node);
+  };
+  try {
+    visit(spec);
+  } catch (err) {
+    if (err instanceof RangeError) throw new Error('WrenchIT: The spec is nested too deeply to preview.');
+    throw err;
+  }
 }
 
 function asOpenApiSpec(value: unknown): unknown | undefined {
@@ -1191,6 +1393,9 @@ export function buildSwaggerUiHtml(
   // Clicking it (or pressing Enter) calls download("") and replaces the spec
   // with "Failed to load API definition" / "No API definition provided".
   // validatorUrl null: the webview CSP blocks the remote validator anyway.
+  // connect-src 'none': the page itself never talks to the network. Every
+  // request Swagger UI makes goes through requestInterceptor to the extension
+  // host, which checks the host; a direct fetch would bypass that check.
   // Initialization does not wait for window.onload: VS Code writes the
   // webview HTML with document.write and that event does not always fire.
   // url plugin: with no spec URL, Swagger UI uses document.baseURI
@@ -1206,7 +1411,7 @@ export function buildSwaggerUiHtml(
 <html lang="en"${htmlClass}>
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https: data: blob:; font-src ${webview.cspSource} data:; connect-src http: https:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https: data: blob:; font-src ${webview.cspSource} data:; connect-src 'none';">
   <link rel="stylesheet" href="${cssUri}">
   <title>Preview OpenAPI</title>
   <style>
@@ -1238,7 +1443,9 @@ export function buildSwaggerUiHtml(
       // new Response() throws for statuses it cannot represent (1xx, or > 599):
       // reject instead, or Swagger UI would wait for this request forever.
       try {
-        var bytes = Uint8Array.from(atob(m.body), function (c) { return c.charCodeAt(0); });
+        var bin = atob(m.body);
+        var bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         var noBody = m.status === 204 || m.status === 205 || m.status === 304;
         p.resolve(new Response(noBody ? null : bytes, { status: m.status, statusText: m.statusText, headers: m.headers }));
       } catch (e) {
