@@ -60,6 +60,11 @@ When a strategy produces text that `JSON.parse` accepts, `finalizeJsonText` also
 - **`tryUnwrapString`** — if the string starts and ends with `"`, uses `JSON.parse` to unescape it; falls back to trimming by hand.
 - **`grafanaDeepClean`** — multi-step cleaner: BOM → CRLF → unwrap (two levels) → symmetric slashes → asymmetric slashes → iterative unescaping (max. 5 passes) → second slash pass → trailing slash in values → `unquoteJsonStringValues` → empty containers as strings → outer double quotes → trailing commas.
 - **`unquoteJsonStringValues`** — removes the quotes around values that are unescaped JSON objects/arrays (e.g. `"Content":"{"k":"v"}"` → `"Content":{"k":"v"}`). Iterates until stable.
+- **`stripSlashesBeforeQuotes`** / **`stripSymmetricSlashes`** — hand-written linear scanners for the Grafana slash patterns. Do not turn them back into regexes: `\/+(?=")` retries from every slash of a run and is quadratic.
+
+#### Performance rules
+
+The cleaner runs synchronously in the extension host on whatever the user pastes (multi-megabyte, often truncated logs), so every helper must stay linear in the input: match brackets with a stack per pass (`unquotePass`), build output from slices pushed to an array, and bound heuristics that scan ahead per candidate (`stripQuotedContainers` has a work budget). The test "cleaning broken input stays fast" guards this.
 
 #### Text formatter `formatJsonText`
 
@@ -70,6 +75,8 @@ Formats JSON with 2-space indentation **working on the text**, without going thr
 `parseOpenApiDocument()` accepts JSON, YAML, a JSON string containing the spec, or Grafana-escaped text (through the `fixJson` cleaner). `buildSwaggerUiHtml()` renders Swagger UI in a webview with the spec embedded and resolved against `SPEC_BASE_URL` (`https://wrenchit.invalid/openapi.json`, never fetched). `findBaseUrlDependencies()` lists what would resolve against that placeholder (relative servers after expanding variable defaults, Swagger 2.0 without `host`, relative external `$ref`s) and the preview shows an HTML-escaped warning for them.
 
 "Try it out" goes through the extension host: the webview posts `wrenchit.fetch` and `runProxyRequest()` performs it with Node's `fetch`. It only allows `http:`/`https:`, lets through the hosts from `collectSpecHosts()` (absolute `servers`, including variable values, or the Swagger 2.0 `host`) and asks the user once per preview for any other host. Every request settles with `{ ok: false }` on network errors, after `PROXY_TIMEOUT_MS` (30 s), when the panel is disposed, or when a body exceeds `PROXY_MAX_BYTES` (20 MB). The webview CSP allows scripts only with a per-render nonce.
+
+"Try it out" does not fetch from the webview (its CSP has `connect-src 'none'`): `requestInterceptor` sets `userFetch` to a function that posts the request to the extension host, where `runProxyRequest()` performs it. That function is the security boundary: only `http`/`https`, hosts from `collectSpecHosts()` or approved by the user (`isProxyHostAllowed`), redirects followed by hand so each hop is checked and credentials are dropped across origins, a timeout and a body size cap. `assertEmbeddableSpec()` rejects specs whose YAML aliases expand to a huge or cyclic document before they are serialized into the page.
 
 ## Release
 

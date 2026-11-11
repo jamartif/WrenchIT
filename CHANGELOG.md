@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.9
+
+- Clean Up and Format JSON: large or truncated input no longer freezes the editor. Long runs of slashes and thousands of unclosed `"{` took up to a minute and now take milliseconds; valid documents are cleaned about 8 times faster.
+- OpenAPI preview: redirects are followed one hop at a time, so a server cannot redirect "Try it out" to a host you have not allowed, and `Authorization` / `Cookie` headers are not forwarded to another origin.
+- OpenAPI preview: the page itself can no longer open network connections (`connect-src 'none'`); every request goes through the extension's host check.
+- OpenAPI preview: a spec whose YAML aliases expand to a huge or self-containing document is rejected with a message instead of hanging the extension host.
+- OpenAPI preview: refreshing the preview cancels the requests of the previous render, and the 30-second timeout no longer runs while you answer the host confirmation.
+- Decode Base64: text that is not Base64, or that does not decode to UTF-8 text, shows an error instead of replacing the selection with garbage. URL-safe Base64 and missing padding are accepted.
+- Build: `@vscode/vsce` 4 and updated development dependencies.
+
 ## 1.2.8
 
 - OpenAPI preview: "Try it out" no longer hangs when the server answers with a 1xx status or never answers. Requests are cancelled after 30 seconds or when the preview is closed.

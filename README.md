@@ -18,7 +18,7 @@ Encodes the selected text as Base64 (UTF-8).
 
 ### WrenchIT: Decode Base64
 
-Decodes the selected Base64 text back to plain text.
+Decodes the selected Base64 text back to plain text. Standard and URL-safe Base64 are accepted, with or without padding. If the selection is not Base64, or it decodes to binary data rather than UTF-8 text, the selection is left untouched and an error is shown.
 
 **Usage:** select the Base64 text → right-click → _WrenchIT: Decode Base64_
 
@@ -62,7 +62,7 @@ It accepts JSON, YAML, a JSON string that contains the spec and, if the text com
 
 The preview has no source URL for the spec, so relative server URLs (or a Swagger 2.0 spec without `host`) would make "Try it out" send requests to a placeholder host. The panel shows a warning when that happens; use absolute server URLs (e.g. `http://localhost:5080/api`) to call the API from the preview.
 
-"Try it out" requests are sent by the extension host rather than the webview, so they are not blocked by CORS. The API still has to be reachable from your machine.
+"Try it out" requests are sent by the extension host rather than the webview, so they are not blocked by CORS. The API still has to be reachable from your machine. Hosts that the spec does not list as servers need your confirmation once per preview, including hosts reached through a redirect, and credentials are not forwarded when a redirect leaves the original origin.
 
 The preview can call the hosts in the spec's `servers` (or the Swagger 2.0 `host`) right away. The first request to any other host, such as a server URL you type in Swagger UI, asks for confirmation, and the answer lasts until the preview is closed. Requests are cancelled after 30 seconds or when the preview is closed, and request and response bodies are limited to 20 MB.
 
