@@ -700,6 +700,7 @@ function previewOpenApi(context: vscode.ExtensionContext) {
       openApiPanel = undefined;
       proxyLifetime.abort();
       proxyApprovedHosts.clear();
+      proxyPendingApprovals.clear();
     });
     openApiPanel.webview.onDidReceiveMessage(handleProxyMessage);
   }
@@ -736,6 +737,8 @@ export interface ProxyOptions {
 export const PROXY_TIMEOUT_MS = 30_000;
 /** Largest request or response body the proxy carries, in bytes (it travels base64 in memory). */
 export const PROXY_MAX_BYTES = 20 * 1024 * 1024;
+/** Redirects the proxy follows before giving up. */
+export const PROXY_MAX_REDIRECTS = 5;
 
 /** "message: cause" for fetch errors, whose message alone is just "fetch failed". */
 export function describeError(err: unknown): string {
@@ -778,6 +781,25 @@ async function readLimited(response: Response, maxBytes: number, abort: (reason:
   return Buffer.concat(chunks, total);
 }
 
+const PROXY_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/** Throws unless the proxy may call this URL (first request or a redirect target). */
+async function checkProxyTarget(url: URL, options: ProxyOptions, isRedirect: boolean): Promise<void> {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(isRedirect ? `Redirect to unsupported protocol ${url.protocol}` : `Unsupported protocol ${url.protocol}`);
+  }
+  if (!(await options.isHostAllowed(url))) {
+    throw new Error(isRedirect
+      ? `Redirect to ${url.host} is not allowed from this preview.`
+      : `Requests to ${url.host} are not allowed from this preview.`);
+  }
+}
+
+/** Copy of headers without the given names (case-insensitive). */
+function withoutHeaders(headers: Record<string, string>, names: string[]): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).filter(([k]) => !names.includes(k.toLowerCase())));
+}
+
 /**
  * Runs one "Try it out" request on behalf of the webview and returns the reply
  * to post back. It always settles: network errors, a closed preview, the
@@ -793,33 +815,48 @@ export async function runProxyRequest(message: ProxyRequest, options: ProxyOptio
   if (options.signal?.aborted) onOuterAbort();
   options.signal?.addEventListener('abort', onOuterAbort);
   try {
-    const url = new URL(message.url);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      throw new Error(`Unsupported protocol ${url.protocol}`);
-    }
-    if (!(await options.isHostAllowed(url))) {
-      throw new Error(`Requests to ${url.host} are not allowed from this preview.`);
-    }
-    const method = String(message.method || 'GET').toUpperCase();
+    let url = new URL(message.url);
+    let method = String(message.method || 'GET').toUpperCase();
     const hasBody = typeof message.body === 'string' && method !== 'GET' && method !== 'HEAD';
     // base64 grows 4/3: check before decoding so a huge body is never copied.
     if (hasBody && Math.floor((message.body!.length * 3) / 4) > maxBytes) {
       throw new Error(`The request body is larger than ${formatMegabytes(maxBytes)}; the preview does not send it.`);
     }
-    if (controller.signal.aborted) throw controller.signal.reason;
-    const response = await options.fetch(url, {
-      method,
-      headers: message.headers,
-      body: hasBody ? Buffer.from(message.body!, 'base64') : undefined,
-      redirect: 'follow',
-      signal: controller.signal
-    });
-    const headers: Array<[string, string]> = [];
-    response.headers.forEach((value, key) => headers.push([key, value]));
+    let headers: Record<string, string> = { ...(message.headers || {}) };
+    let body: Uint8Array<ArrayBuffer> | undefined = hasBody ? new Uint8Array(Buffer.from(message.body!, 'base64')) : undefined;
+    let response: Response;
+    // Redirects are followed by hand so every hop goes through the same
+    // protocol and host checks as the first URL: otherwise an allowed server
+    // could bounce the request to localhost or a metadata endpoint.
+    for (let hop = 0; ; hop++) {
+      await checkProxyTarget(url, options, hop > 0);
+      if (controller.signal.aborted) throw controller.signal.reason;
+      response = await options.fetch(url, { method, headers, body, redirect: 'manual', signal: controller.signal });
+      const location = response.headers.get('location');
+      if (!PROXY_REDIRECT_STATUSES.has(response.status) || !location) break;
+      if (hop >= PROXY_MAX_REDIRECTS) {
+        throw new Error(`More than ${PROXY_MAX_REDIRECTS} redirects; the request was cancelled.`);
+      }
+      await response.body?.cancel().catch(() => undefined);
+      const next = new URL(location, url);
+      // Same rules as fetch: 303 (and 301/302 after a POST) turn into a GET without body.
+      if (response.status === 303 ? method !== 'HEAD' : (response.status === 301 || response.status === 302) && method === 'POST') {
+        method = 'GET';
+        body = undefined;
+        headers = withoutHeaders(headers, ['content-type', 'content-length', 'content-encoding', 'content-language', 'content-location']);
+      }
+      // Credentials never travel to another origin.
+      if (next.origin !== url.origin) {
+        headers = withoutHeaders(headers, ['authorization', 'cookie', 'proxy-authorization']);
+      }
+      url = next;
+    }
+    const responseHeaders: Array<[string, string]> = [];
+    response.headers.forEach((value, key) => responseHeaders.push([key, value]));
     // fetch already decoded the body, so drop headers that describe the wire format.
-    const filtered = headers.filter(([k]) => !['content-encoding', 'content-length', 'transfer-encoding'].includes(k.toLowerCase()));
-    const body = (await readLimited(response, maxBytes, abort)).toString('base64');
-    return { ok: true, status: response.status, statusText: response.statusText, headers: filtered, body, url: response.url };
+    const filtered = responseHeaders.filter(([k]) => !['content-encoding', 'content-length', 'transfer-encoding'].includes(k.toLowerCase()));
+    const responseBody = (await readLimited(response, maxBytes, abort)).toString('base64');
+    return { ok: true, status: response.status, statusText: response.statusText, headers: filtered, body: responseBody, url: url.href };
   } catch (err) {
     // After an abort, fetch rejects with a generic AbortError: report why it was aborted.
     const reason = controller.signal.aborted ? controller.signal.reason : err;
@@ -922,6 +959,9 @@ async function isProxyHostAllowed(url: URL): Promise<boolean> {
   if (proxyAllowedHosts.has(host) || proxyApprovedHosts.has(host)) return true;
   let approval = proxyPendingApprovals.get(host);
   if (!approval) {
+    // A dialog answered after its preview was closed must not allow the host
+    // in the next preview.
+    const lifetime = proxyLifetime;
     approval = vscode.window
       .showWarningMessage(
         `The OpenAPI preview wants to send a request to ${host}, which is not one of the spec's servers. Allow requests to this host while the preview is open?`,
@@ -929,6 +969,7 @@ async function isProxyHostAllowed(url: URL): Promise<boolean> {
         'Allow'
       )
       .then((choice) => {
+        if (lifetime !== proxyLifetime || lifetime.signal.aborted) return false;
         proxyPendingApprovals.delete(host);
         if (choice === 'Allow') proxyApprovedHosts.add(host);
         return choice === 'Allow';
