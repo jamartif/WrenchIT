@@ -558,6 +558,61 @@ test('proxy only calls hosts the host check allows', async () => {
   assert.equal(fetch.calls.length, 0);
 });
 
+const redirectTo = (location, status = 302) => new Response(null, { status, headers: { location } });
+
+test('proxy checks the host of every redirect before following it', async () => {
+  for (const target of ['http://localhost:9000/admin', 'http://169.254.169.254/latest/meta-data/']) {
+    const fetch = fakeFetch((url) => String(url).startsWith('http://api.test/') ? redirectTo(target) : new Response('secret'));
+    const asked = [];
+    const reply = await runProxyRequest(proxyRequest(), {
+      fetch,
+      isHostAllowed: (url) => { asked.push(url.host); return url.host === 'api.test'; }
+    });
+    assert.equal(reply.ok, false, target);
+    assert.match(reply.error, /Redirect to .* is not allowed/);
+    assert.deepEqual(asked, ['api.test', new URL(target).host]);
+    assert.deepEqual(fetch.calls.map((c) => c.url), ['http://api.test/x'], 'the redirect target is never called');
+    assert.equal(fetch.calls[0].init.redirect, 'manual');
+  }
+});
+
+test('proxy follows allowed redirects and rewrites the request like fetch does', async () => {
+  const fetch = fakeFetch((url) => {
+    const u = String(url);
+    if (u === 'http://api.test/x') return redirectTo('/y', 303);
+    if (u === 'http://api.test/y') return redirectTo('https://other.test/z', 307);
+    return new Response('done');
+  });
+  const reply = await runProxyRequest(
+    proxyRequest({ method: 'POST', headers: { authorization: 'Bearer t', 'content-type': 'text/plain', 'x-keep': '1' }, body: Buffer.from('p').toString('base64') }),
+    { fetch, isHostAllowed: allowAll }
+  );
+  assert.equal(reply.ok, true);
+  assert.equal(Buffer.from(reply.body, 'base64').toString(), 'done');
+  assert.equal(reply.url, 'https://other.test/z');
+  const [first, second, third] = fetch.calls;
+  assert.equal(first.init.method, 'POST');
+  assert.equal(second.init.method, 'GET', '303 turns into GET');
+  assert.equal(second.init.body, undefined);
+  assert.equal(second.init.headers['content-type'], undefined);
+  assert.equal(second.init.headers.authorization, 'Bearer t', 'same origin keeps credentials');
+  assert.equal(third.url, 'https://other.test/z');
+  assert.equal(third.init.headers.authorization, undefined, 'credentials do not cross origins');
+  assert.equal(third.init.headers['x-keep'], '1');
+});
+
+test('proxy rejects redirect loops and redirects to other protocols', async () => {
+  const loop = fakeFetch(() => redirectTo('/again'));
+  const looped = await runProxyRequest(proxyRequest(), { fetch: loop, isHostAllowed: allowAll });
+  assert.equal(looped.ok, false);
+  assert.match(looped.error, /More than \d+ redirects/);
+
+  const toFile = fakeFetch(() => redirectTo('file:///etc/passwd'));
+  const file = await runProxyRequest(proxyRequest(), { fetch: toFile, isHostAllowed: allowAll });
+  assert.match(file.error, /Redirect to unsupported protocol file:/);
+  assert.equal(toFile.calls.length, 1);
+});
+
 test('collectSpecHosts lists the absolute servers the spec declares', () => {
   const hosts = collectSpecHosts({
     openapi: '3.0.3',
